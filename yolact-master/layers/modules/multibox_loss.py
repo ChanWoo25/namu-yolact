@@ -63,6 +63,7 @@ class MultiBoxLoss(nn.Module):
             #cw : forward propagation을 통하여 예측된, 위치, 각 클래스에 대한 점수, mask모양, 
             #       priors shape와 proto* shape의 역할은 TODO
 
+            #cw : (batch_size, ...)의 모양
             predictions (tuple): A tuple containing loc preds, conf preds,
             mask preds, and prior boxes from SSD net.
                 loc shape: torch.size(batch_size,num_priors,4)
@@ -75,8 +76,10 @@ class MultiBoxLoss(nn.Module):
             targets (list<tensor>): Ground truth boxes and labels for a batch,
                 shape: [batch_size][num_objs,5] (last idx is the label).
 
+            #cw : Mask ground truth.
             masks (list<tensor>): Ground truth masks for each object in each image,
                 shape: [batch_size][num_objs,im_height,im_width]
+
 
             num_crowds (list<int>): Number of crowd annotations per batch. The crowd
                 annotations should be the last num_crowds elements of targets and masks.
@@ -84,33 +87,36 @@ class MultiBoxLoss(nn.Module):
             * Only if mask_type == lincomb
         """
 
-        loc_data  = predictions['loc']
-        conf_data = predictions['conf']
-        mask_data = predictions['mask']
-        priors    = predictions['priors']
+        loc_data  = predictions['loc']      #cw : (batch_size, num_priors, 4)
+        conf_data = predictions['conf']     #cw : (batch_size, num_priors, num_classes)
+        mask_data = predictions['mask']     #cw : (batch_size, num_priors, mask_dim)
+        priors    = predictions['priors']   #cw : (num_priors, 4) - batch_size만큼이 아님.. 뭘 위한 loss
 
+        #cw : linear combination으로 prototype을 합치는 Net일 경우, proto_data생성.
         if cfg.mask_type == mask_type.lincomb:
-            proto_data = predictions['proto']
+            proto_data = predictions['proto']   #cw : (batch_size, mask_h, mask_w, mask_dim)
 
         score_data = predictions['score'] if cfg.use_mask_scoring   else None   
         inst_data  = predictions['inst']  if cfg.use_instance_coeff else None
         
-        labels = [None] * len(targets) # Used in sem segm loss
+        labels = [None] * len(targets) #cw : Used in semantic segmentation loss
 
         batch_size = loc_data.size(0)
         num_priors = priors.size(0)
         num_classes = self.num_classes
 
-        # Match priors (default boxes) and ground truth boxes
+        # Match priors (default boxes==anchor boxes) and ground truth boxes
         # These tensors will be created with the same device as loc_data
         loc_t = loc_data.new(batch_size, num_priors, 4)
         gt_box_t = loc_data.new(batch_size, num_priors, 4)
         conf_t = loc_data.new(batch_size, num_priors).long()
         idx_t = loc_data.new(batch_size, num_priors).long()
 
+        # 'E' 타입의 loss를 구할시.
         if cfg.use_class_existence_loss:
             class_existence_t = loc_data.new(batch_size, num_classes-1)
 
+        #cw : batch의 각 sample에 대해 다음 작업.
         for idx in range(batch_size):
             truths      = targets[idx][:, :-1].data
             labels[idx] = targets[idx][:, -1].data.long()
@@ -212,9 +218,9 @@ class MultiBoxLoss(nn.Module):
         total_num_pos = num_pos.data.sum().float()
         for k in losses:
             if k not in ('P', 'E', 'S'):
-                losses[k] /= total_num_pos
+                losses[k] /= total_num_pos  #cw : B, C, M, D loss는 bbox마다 생성되는 것이므로 /= total_num_pos
             else:
-                losses[k] /= batch_size
+                losses[k] /= batch_size     #cw : img 하나당 하나씩 생성되는 loss이므로 /= batch_size
 
         # Loss Key:
         #  - B: Box Localization Loss
