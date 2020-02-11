@@ -112,18 +112,19 @@ class MultiBoxLoss(nn.Module):
         conf_t = loc_data.new(batch_size, num_priors).long()
         idx_t = loc_data.new(batch_size, num_priors).long()
 
-        # 'E' 타입의 loss를 구할시.
+        # 'E' 타입의 loss를 구할시. 차원:(batch_size, num_priors, 4)
         if cfg.use_class_existence_loss:
             class_existence_t = loc_data.new(batch_size, num_classes-1)
 
-        #cw : batch의 각 sample에 대해 다음 작업.
+        #cw : batch의 각 sample에 대해 다음 작업. 
         for idx in range(batch_size):
             truths      = targets[idx][:, :-1].data
-            labels[idx] = targets[idx][:, -1].data.long()
+            labels[idx] = targets[idx][:, -1].data.long() #cw : (num_objs, 5)
 
             if cfg.use_class_existence_loss:
                 # Construct a one-hot vector for each object and collapse it into an existence vector with max
                 # Also it's fine to include the crowd annotations here
+                #cw : torch.eye(n, ...) n*n크기의 I행렬을 만든다.
                 class_existence_t[idx, :] = torch.eye(num_classes-1, device=conf_t.get_device())[labels[idx]].max(dim=0)[0]
 
             # Split the crowd annotations because they come bundled in
