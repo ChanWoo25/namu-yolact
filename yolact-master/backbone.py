@@ -68,12 +68,14 @@ class ResNetBackbone(nn.Module):
         self.layers = nn.ModuleList()
         self.channels = []
         self.norm_layer = norm_layer
-        self.dilation = 1
-        self.atrous_layers = atrous_layers
+        self.dilation = 1                  #cw : delation value 1칸 더 넓은 receptive field.
+        self.atrous_layers = atrous_layers #cw : list로 인자를 받는데, 무슨 정보가 들어있을까
 
         # From torchvision.models.resnet.Resnet
+        #cw : plane == channel 느낌
         self.inplanes = 64
         
+        #cw : 얹어진 layer 전에 첫 conv (550, 550, 3) -Conv2d> (276, 276, 64) -Pooling> (138, 138, 64)
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = norm_layer(64)
         self.relu = nn.ReLU(inplace=True)
@@ -89,6 +91,8 @@ class ResNetBackbone(nn.Module):
         # in this list. That way, Yolact::init_weights knows which backbone weights to initialize
         # with xavier, and which ones to leave alone.
         self.backbone_modules = [m for m in self.modules() if isinstance(m, nn.Conv2d)]
+        # cw: isinstance(x, y) x의 type이 y인지 확인하여 맞으면 True 반환
+        #     즉, self.modules()안의 Conv2d 인 layer만 모아서 backbone_modules에 list로 저장. ->무엇을 위해?
         
     
     def _make_layer(self, block, planes, blocks, stride=1, dcn_layers=0, dcn_interval=1):
@@ -446,10 +450,11 @@ class VGGBackbone(nn.Module):
                 
 
 
-def construct_backbone(cfg):
+def construct_backbone(cfg): #cw : yolact에서 cfg.backbone을 인자로 넘겨받음.
     """ Constructs a backbone given a backbone config object (see config.py). """
-    backbone = cfg.type(*cfg.args)
-
+    backbone = cfg.type(*cfg.args)  # -> ResNetBackbone([3, 4, 23, 3]) -> list는 ResNetBackbone Class의 layers 인자로 들어감.
+                                    #cw : resnet-101 config 예 : 'args': ([3, 4, 23, 3],),'type': ResNetBackbone,
+                                    #     **keyargs 로 넘길 때 *을 사용하는듯한.
     # Add downsampling layers until we reach the number we need
     num_layers = max(cfg.selected_layers) + 1
 
@@ -457,3 +462,14 @@ def construct_backbone(cfg):
         backbone.add_layer()
 
     return backbone
+
+#cw# Backbone Settings example : in yolact_base_config
+#     'backbone': resnet101_backbone.copy({
+#         'selected_layers': list(range(1, 4)),     # 1, 2, 3
+#         'use_pixel_scales': True,
+#         'preapply_sqrt': False,
+#         'use_square_anchors': True, # This is for backward compatability with a bug
+
+#         'pred_aspect_ratios': [ [[1, 1/2, 2]] ]*5,       #cw : *5는 왜 붙어있을까?
+#         'pred_scales': [[24], [48], [96], [192], [384]],
+#     }),
