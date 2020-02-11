@@ -315,8 +315,14 @@ mask_type = Config({
     # Parameters:
     #   - masks_to_train (int): Since we're producing (near) full image masks, it'd take too much
     #                           vram to backprop on every single mask. Thus we select only a subset.
+    #                           cw : 우리가 full image masks,즉 모든 마스크를 일단 만들고 보는 방법을 사용하므로
+    #                               모든 예측 마스크에 대해 backprop을 진행하는 것은 무리다. 그러므로 이 변수로 지정된 개수만큼의
+    #                               마스크의 부분집합을 선택하여 역전파 시킨다.
+    #
     #   - mask_proto_src (int): The input layer to the mask prototype generation network. This is an
     #                           index in backbone.layers. Use to use the image itself instead.
+    #                           cw : 이 int형 변수는 backbone.layers중 하나의 layer를 나타내는 index이다. ->mask_dim을 계산할 때 사용.
+    #
     #   - mask_proto_net (list<tuple>): A list of layers in the mask proto network with the last one
     #                                   being where the masks are taken from. Each conv layer is in
     #                                   the form (num_features, kernel_size, **kwdargs). An empty
@@ -324,8 +330,11 @@ mask_type = Config({
     #                                   kernel_size is negative, this creates a deconv layer instead.
     #                                   If the kernel_size is negative and the num_features is None,
     #                                   this creates a simple bilinear interpolation layer instead.
+    #
     #   - mask_proto_bias (bool): Whether to include an extra coefficient that corresponds to a proto
     #                             mask of all ones.
+    #                             cw : 모든 proto mask에 대해서 추가 계수(bias)를 넣을지 여부에 대한 bool값.
+    #
     #   - mask_proto_prototype_activation (func): The activation to apply to each prototype mask.
     #   - mask_proto_mask_activation (func): After summing the prototype masks with the predicted
     #                                        coeffs, what activation to apply to the final mask.
