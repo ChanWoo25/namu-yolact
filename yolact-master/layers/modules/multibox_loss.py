@@ -7,6 +7,23 @@ from ..box_utils import match, log_sum_exp, decode, center_size, crop, elemwise_
 
 from data import cfg, mask_type, activation_func
 
+#cw: yolact_plus의 경우:
+### Mask Settings
+#     'mask_type': mask_type.lincomb,
+#     'mask_alpha': 6.125,
+#     'mask_proto_src': 0,
+#     'mask_proto_net': [(256, 3, {'padding': 1})] * 3 + [(None, -2, {}), (256, 3, {'padding': 1})] + [(32, 1, {})],
+#     'mask_proto_normalize_emulate_roi_pooling': True,
+###Other stuff
+# 'share_prediction_module': True,
+# 'extra_head_net': [(256, 3, {'padding': 1})],
+
+# 'positive_iou_threshold': 0.5,
+# 'negative_iou_threshold': 0.4,
+
+# 'crowd_iou_threshold': 0.7,
+
+# 'use_semantic_segmentation_loss': True,
 class MultiBoxLoss(nn.Module):
     """SSD Weighted Loss Function
     Compute Targets: [cw : 연산하고자 하는 target]
@@ -118,8 +135,8 @@ class MultiBoxLoss(nn.Module):
 
         #cw : batch의 각 sample에 대해 다음 작업. 
         for idx in range(batch_size):
-            truths      = targets[idx][:, :-1].data
-            labels[idx] = targets[idx][:, -1].data.long() #cw : (num_objs, 5)
+            truths      = targets[idx][:, :-1].data         #cw : batch 1개의 모든 obj의 5개 값중 label을 제외한 4개 값.
+            labels[idx] = targets[idx][:, -1].data.long()   #cw : batch 1개의 모든 obj의 5개 값중 label을 long(정수형)값으로.
 
             if cfg.use_class_existence_loss:
                 # Construct a one-hot vector for each object and collapse it into an existence vector with max
@@ -129,8 +146,10 @@ class MultiBoxLoss(nn.Module):
 
             # Split the crowd annotations because they come bundled in
             cur_crowds = num_crowds[idx]
+
+            #cw : crowd존재하면 둘로 나눔.
             if cur_crowds > 0:
-                split = lambda x: (x[-cur_crowds:], x[:-cur_crowds])
+                split = lambda x: (x[-cur_crowds:], x[:-cur_crowds]) #cw : 람다 함수 작성
                 crowd_boxes, truths = split(truths)
 
                 # We don't use the crowd labels or masks
@@ -163,9 +182,15 @@ class MultiBoxLoss(nn.Module):
         if cfg.train_boxes:
             loc_p = loc_data[pos_idx].view(-1, 4)
             loc_t = loc_t[pos_idx].view(-1, 4)
-            losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * cfg.bbox_alpha
+            losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * cfg.bbox_alpha 
+            #cw : Box Localization Loss
+            #   smooth_l1_liss 식
+            #   x = |loc_p - loc_t| 
+            #   ret = (0.5 * x * x) if (x < 1) else (x - 0.5) 4개 'sum'으로 반환
 
+        #cw : 마스크 학습을 시킨다면 2개의 분기로 나눠짐
         if cfg.train_masks:
+            #1 direct(nope)
             if cfg.mask_type == mask_type.direct:
                 if cfg.use_gt_bboxes:
                     pos_masks = []
@@ -176,6 +201,8 @@ class MultiBoxLoss(nn.Module):
                     losses['M'] = F.binary_cross_entropy(torch.clamp(masks_p, 0, 1), masks_t, reduction='sum') * cfg.mask_alpha
                 else:
                     losses['M'] = self.direct_mask_loss(pos_idx, idx_t, loc_data, mask_data, priors, masks)
+            
+            #2 lincomb(yes)
             elif cfg.mask_type == mask_type.lincomb:
                 ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, score_data, inst_data, labels)
                 if cfg.use_maskiou:
@@ -184,13 +211,14 @@ class MultiBoxLoss(nn.Module):
                     loss = ret
                 losses.update(loss)
 
+                #cw: default값 None으로 사용하므로 쓰이지 않음.
                 if cfg.mask_proto_loss is not None:
                     if cfg.mask_proto_loss == 'l1':
                         losses['P'] = torch.mean(torch.abs(proto_data)) / self.l1_expected_area * self.l1_alpha
-                    elif cfg.mask_proto_loss == 'disj':
+                    elif cfg.mask_proto_loss == 'disj': #cw: disjunction?
                         losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
 
-        # Confidence loss
+        #cw: Confidence loss - yolact_plus_config 에서 쓰이지 않음 (논문 저자의 다방면 실험을 위해서 필요했던듯?)
         if cfg.use_focal_loss:
             if cfg.use_sigmoid_focal_loss:
                 losses['C'] = self.focal_conf_sigmoid_loss(conf_data, conf_t)
@@ -201,10 +229,10 @@ class MultiBoxLoss(nn.Module):
         else:
             if cfg.use_objectness_score:
                 losses['C'] = self.conf_objectness_loss(conf_data, conf_t, batch_size, loc_p, loc_t, priors)
-            else:
+            else:   
                 losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
 
-        # Mask IoU Loss
+        #cw: Mask IoU Loss
         if cfg.use_maskiou and maskiou_targets is not None:
             losses['I'] = self.mask_iou_loss(net, maskiou_targets)
 
@@ -518,12 +546,15 @@ class MultiBoxLoss(nn.Module):
 
 
     def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, score_data, inst_data, labels, interpolation_mode='bilinear'):
+        #cw: (batch_size, mask_h, mask_w, mask_dim)
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
-
+        
+        #cw : 둘 다 True
         process_gt_bboxes = cfg.mask_proto_normalize_emulate_roi_pooling or cfg.mask_proto_crop
-
-        if cfg.mask_proto_remove_empty_masks:
+        
+        #cw: default로 False
+        if cfg.mask_proto_remove_empty_masks: 
             # Make sure to store a copy of this because we edit it to get rid of all-zero masks
             pos = pos.clone()
 
