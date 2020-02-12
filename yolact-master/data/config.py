@@ -43,6 +43,7 @@ COCO_CLASSES = ('person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
                 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase',
                 'scissors', 'teddy bear', 'hair drier', 'toothbrush')
 
+#cw : dictionary
 COCO_LABEL_MAP = { 1:  1,  2:  2,  3:  3,  4:  4,  5:  5,  6:  6,  7:  7,  8:  8,
                    9:  9, 10: 10, 11: 11, 13: 12, 14: 13, 15: 14, 16: 15, 17: 16,
                   18: 17, 19: 18, 20: 19, 21: 20, 22: 21, 23: 22, 24: 23, 25: 24,
@@ -69,6 +70,7 @@ class Config(object):
 
     def __init__(self, config_dict):
         for key, val in config_dict.items():
+            #cw : dictionary형태로 새로운 key를 만들어줌.
             self.__setattr__(key, val)
 
     def copy(self, new_config_dict={}):
@@ -178,6 +180,7 @@ pascal_sbd_dataset = dataset_base.copy({
 
 # ----------------------- TRANSFORMS ----------------------- #
 
+#cw : WE USE THIS
 resnet_transform = Config({
     'channel_order': 'RGB',
     'normalize': True,
@@ -469,9 +472,12 @@ coco_base_config = Config({
     'mask_proto_src': None,
     'mask_proto_net': [(256, 3, {}), (256, 3, {})],
     'mask_proto_bias': False,
+
+    #cw : 각각 다른 활성화 함수 사용
     'mask_proto_prototype_activation': activation_func.relu,
     'mask_proto_mask_activation': activation_func.sigmoid,
     'mask_proto_coeff_activation': activation_func.tanh,
+    
     'mask_proto_crop': True,
     'mask_proto_crop_expand': 0,
     'mask_proto_loss': None,
