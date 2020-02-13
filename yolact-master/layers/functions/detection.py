@@ -17,8 +17,8 @@ class Detect(object):
     # jy: Detect는 SSD(Single Shot Multibox Detector)의 마지막 layer
     #     SSD : output을 만드는 공간을 나눔, 나눠진 각각의 맵에서 다른 비율과 스케일로 default box를
     #           생성하고 모델을 통해 계산된 좌표와 클래스 값에 default box를 활용해 최종 bounding box 생성
-    #     NMS(non-maximum suppression)을 Confidence score에 기반한 위치 예측을 적용하고
-    #     confidence score와 위치에 대한 출력 예측의 수인 top_k를 임계값으로 적용.  -> traditional_nms에서는 top_k 사용안함.
+    #     NMS(non-maximum suppression)에 Confidence score에 기반한 위치 예측을 적용하고
+    #     confidence score와 위치에 대한 출력 예측 갯수에 top_k를 임계값으로 적용.  -> traditional_nms에서는 top_k 사용안함.
     
     
     # TODO: Refactor this whole class away. It needs to go.
