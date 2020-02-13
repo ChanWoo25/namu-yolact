@@ -8,7 +8,8 @@ from layers.interpolate import InterpolateModule
 
 class MovingAverage():
     """ Keeps an average window of the specified number of items. """
-
+    # jy : 영상을 프레임으로 쪼개어 쓰기 위함 아래에 max size = 1000이 기본값인데 대부분 100으로 쓰임
+    
     def __init__(self, max_window_size=1000):
         self.max_window_size = max_window_size
         self.reset()
@@ -50,7 +51,7 @@ class MovingAverage():
 
 class ProgressBar():
     """ A simple progress bar that just outputs a string. """
-
+    # jy : 진행 사항 string으로 표현 repr() 함수와 함께 사용됨.  ░로 게이지바.. 같은거 만듬.
     def __init__(self, length, max_val):
         self.max_val = max_val
         self.length = length
