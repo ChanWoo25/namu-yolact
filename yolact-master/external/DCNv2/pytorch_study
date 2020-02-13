@@ -1,0 +1,65 @@
+1. pytorch 란?
+  파이썬을 기반으로 하는 Scientific Computing 패키지
+  GPU를 제대로 이용하기 위해 numpy의 대체제로 사용
+  
+  - tensor : numpy와 유사하며 계산 속도를 빠르게 하기 위해서 GPU에서 사용할 수 있는 것.
+    - x = torch.rand(5, 3)   #랜덤으로 초기화된 5x3 행렬 생성
+    - x = torch.zeros(5, 3, dtype=torch.long)   #0으로 채워지고 long 타입의 행렬 생성
+    - x = torch.tensor([5.5, 3])  #직접 텐서 생성
+  
+  - 연산
+    - result = torch.empty(5, 3)
+      torch.add(x, y, out=result)
+    - y = x.view(16)
+      z = x.view(-1, 8)   #view()를 이용하여 텐서의 사이즈나 모양을 변경
+    - x.item()으로 1개의 요소를 가지는 tensor를 하나의 숫자 데이터로 값을 가져올 수 있음.
+  
+  - numpy 변경
+    - a = torch.ones(5)   #tensor([1., 1., 1., 1., 1.])
+      b = a.numpy()       #tensor(a)를 numpy(b)로 변경
+    - a = np.ones(5)
+      b = torch.from_numpy(a) #numpy(a)를 tensor(b)로 변경
+      
+  - CUDA
+    텐서는 .to 메소드를 이용하여 (CUDA를 지원하는) 그 어떠한 디바이스로도 옮길 수 잇다.
+    - if torch.cuda.is_availbale():
+        device = torch.device("cuda")           #a CUDA device object
+        y = torch.ones_like(x, device=device)   #directly create a tensor on GPU
+        x = x.to(device)                        #or just use strings .to("cuda")
+        
+2. Autograd : 자동미분
+  Pytorch에서 뉴럴 네트워크의 중심이 되는 패키지. 텐서의 모든 연산에 대하여 자동 미분을 제공.
+  ? define-by-run 프레임워크 : 코드가 어떻게 실행되는지 따라 backprop가 정의되고 반복마다 달라질 수 있다.
+    ↔ defined-and-run(tensorflow)
+  
+  - Tensors
+    - torch.Tensor는 패키지에서 가장 중심이 되는 클래스다.
+    - 텐서의 속성 중 하나인 .requires_grad를 True로 세팅하면 텐서의 모든 연산에 대하여 추적을 시작한다.
+      계산 작업이 모두 수행되면 .backward()를 호출하여 모든 gradients를 자동으로 계산할 수 있다.
+      이 텐서를 위한 gradients는 .grad 속성에 누적되어 저장된다.
+    - 텐서에 대한 기록(history) 추적을 중지하려면 .detach()를 호출하여 현재의 계산기록으로부터 분리시키고 이후 계산은 추적되지 않게 한다.
+    - 기록 추적(및 메모리 사용)을 방지하려면, 코드 블럭을 with torch.no_grad(): 로 wrap할 수 있다.
+      모델을 평가할 때 gradient가 필요하지 않기에 용이하다.
+    - Function도 매우 중요한 클래스이다.
+      ? tensor와 function은 연결되어 있으며 비순환 그래프를 생성하고 계산 기록에 대하여 인코딩을 수행한다.
+      ? 각 변수는 tensor를 생성한 function을 참조하는 .grad_fn 속성을 가지고 있다.(사용자가 생성한 텐서 제외. =None)
+    - 만약 도함수(derivatives)를 계산하고 싶으면 tensor의 .backward()를 호출한다.
+      만약 tensor가 스칼라 형태라면 .backward()사용에 어떠한 파라미터도 필요하지 않다.
+    
+    궁금한 것 : 그러면 우리가 requires_grad=True 한 tensor들이 연산할 때마다 기록이 되고 
+    
+  - Gradients
+        
+        
+        
+
+https://bob3rdnewbie.tistory.com/315?category=780658
+
+
+
+패키지 >> 모듈 >> 클래스, 함수, 변수
+__init__.py 는 패키지를 초기화하는 역할. python3.3 이후 버전은 생략 가능, 하위 버전의 호환성을 위해 만들어주는 것 좋다.(내용이 없어도 됨)
+패키지는 디렉토리(폴더) 구조로 되어있다.
+
+from animal.rabbit import *
+* 기호로 포함시킬 모듈을 __init__.py의 __all__ 변수로 지정한다.
