@@ -14,22 +14,31 @@ class Detect(object):
     scores and threshold to a top_k number of output predictions for both
     confidence score and locations, as the predicted masks.
     """
+    # jy: Detect는 SSD(Single Shot Multibox Detector)의 마지막 layer
+    #     SSD : output을 만드는 공간을 나눔, 나눠진 각각의 맵에서 다른 비율과 스케일로 default box를
+    #           생성하고 모델을 통해 계산된 좌표와 클래스 값에 default box를 활용해 최종 bounding box 생성
+    #     NMS(non-maximum suppression)을 Confidence score에 기반한 위치 예측을 적용하고
+    #     confidence score와 위치에 대한 출력 예측의 수인 top_k를 임계값으로 적용.  -> traditional_nms에서는 top_k 사용안함.
+    
+    
     # TODO: Refactor this whole class away. It needs to go.
 
     def __init__(self, num_classes, bkg_label, top_k, conf_thresh, nms_thresh):
         self.num_classes = num_classes
         self.background_label = bkg_label
-        self.top_k = top_k
+        self.top_k = top_k                       
         # Parameters used in nms.
-        self.nms_thresh = nms_thresh
+        self.nms_thresh = nms_thresh   #nms에서 iou thresh
         if nms_thresh <= 0:
             raise ValueError('nms_threshold must be non negative.')
-        self.conf_thresh = conf_thresh
+        self.conf_thresh = conf_thresh  # fast nms에서는 top_k로 대체됨.
         
         self.use_cross_class_nms = False
-        self.use_fast_nms = False
+        self.use_fast_nms = False   # jy: eval.py에서 true로 쓰이는 듯함.
 
     def __call__(self, predictions, net):
+        # jy: yolact.py Yolact 클래스의 forward 함수에서 호출 
+        #     예측을 계산하고나서 net에 일정한 shape로 반환하기 위함.
         """
         Args:
              loc_data: (tensor) Loc preds from loc layers
@@ -48,6 +57,7 @@ class Detect(object):
             These outputs are in the order: class idx, confidence, bbox coords, and mask.
 
             Note that the outputs are sorted only if cross_class_nms is False
+            # jy: evaluation 아닐 때만 정렬 된다는 의미. 아마 훈련 동안 output에 접근하기 위함
         """
 
         loc_data   = predictions['loc']
@@ -77,7 +87,8 @@ class Detect(object):
         
         return out
 
-
+    # jy : 위의 호출 때 batch size마다 호출되는 함수 
+    #      배경이 아닌 최대 scoring class에 대해서만 nms 수행.
     def detect(self, batch_idx, conf_preds, decoded_boxes, mask_data, inst_data):
         """ Perform nms for only the max scoring class that isn't background (class 0) """
         cur_scores = conf_preds[batch_idx, 1:, :]
@@ -93,7 +104,7 @@ class Detect(object):
     
         if scores.size(1) == 0:
             return None
-        
+        # jy : 설정에 따라 nms 선택, 각각은 아래에 정의되어있음.
         if self.use_fast_nms:
             if self.use_cross_class_nms:
                 boxes, masks, classes, scores = self.cc_fast_nms(boxes, masks, scores, self.nms_thresh, self.top_k)
@@ -107,25 +118,28 @@ class Detect(object):
 
         return {'box': boxes, 'mask': masks, 'class': classes, 'score': scores}
 
-
+        #cross class nms
+        # 기존에 class 각각에 대해서 box를 계산했지만 시간적 비용을 줄이기 위해 한꺼번에 수행하기 위함.
+        # 가장 높은 Score부터 top_k 개만큼 남긴 후에 IoU 계산하고, iou_thresh 넘는 것들 제외.
     def cc_fast_nms(self, boxes, masks, scores, iou_threshold:float=0.5, top_k:int=200):
         # Collapse all the classes into 1 
-        scores, classes = scores.max(dim=0)
+        scores, classes = scores.max(dim=0)   # class 상관없이 최대인 score 남김
 
-        _, idx = scores.sort(0, descending=True)
-        idx = idx[:top_k]
+        _, idx = scores.sort(0, descending=True)   # 점수 내림차순으로 정렬
+        idx = idx[:top_k]   #  top_k개 넘어갈만큼 작은 score 제외
 
-        boxes_idx = boxes[idx]
+        boxes_idx = boxes[idx] # box에 제외된 index 적용
 
         # Compute the pairwise IoU between the boxes
-        iou = jaccard(boxes_idx, boxes_idx)
+        iou = jaccard(boxes_idx, boxes_idx) 
         
-        # Zero out the lower triangle of the cosine similarity matrix and diagonal
+        # Zero out the lower triangle of the cosine similarity(코사인 유사도? 다차원에서의 거리, 유사도 측정) matrix and diagonal
         iou.triu_(diagonal=1)
 
         # Now that everything in the diagonal and below is zeroed out, if we take the max
         # of the IoU matrix along the columns, each column will represent the maximum IoU
         # between this element and every element with a higher score than this element.
+        # element와 자기보다 더 높은 score 가진 element 중에 IoU가 제일 큰 것만 남김.
         iou_max, _ = torch.max(iou, dim=0)
 
         # Now just filter out the ones greater than the threshold, i.e., only keep boxes that
@@ -134,6 +148,7 @@ class Detect(object):
         
         return boxes[idx_out], masks[idx_out], classes[idx_out], scores[idx_out]
 
+        # cc_fast_nms와 다르게 
     def fast_nms(self, boxes, masks, scores, iou_threshold:float=0.5, top_k:int=200, second_threshold:bool=False):
         scores, idx = scores.sort(1, descending=True)
 
@@ -157,6 +172,7 @@ class Detect(object):
         # have such a minimal amount of computation per detection (matrix mulitplication only),
         # this increase doesn't affect us much (+0.2 mAP for 34 -> 33 fps), so we leave it out.
         # However, when you implement this in your method, you should do this second threshold.
+        # 마지막 줄 다른 곳에 사용하려면 second thresh 사용해야하는듯. (confidence thresh)
         if second_threshold:
             keep *= (scores > self.conf_thresh)
 
