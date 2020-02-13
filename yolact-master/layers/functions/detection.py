@@ -152,7 +152,7 @@ class Detect(object):
     def fast_nms(self, boxes, masks, scores, iou_threshold:float=0.5, top_k:int=200, second_threshold:bool=False):
         scores, idx = scores.sort(1, descending=True)
 
-        idx = idx[:, :top_k].contiguous()
+        idx = idx[:, :top_k].contiguous()  # 텐서의 메모리 연결이 끊어져 불연속하게 되었을 때 새로 복사본을 만들어서 연속적인 메모리 배열을 생성
         scores = scores[:, :top_k]
     
         num_classes, num_dets = idx.size()
