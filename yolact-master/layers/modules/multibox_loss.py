@@ -116,7 +116,8 @@ class MultiBoxLoss(nn.Module):
         score_data = predictions['score'] if cfg.use_mask_scoring   else None   
         inst_data  = predictions['inst']  if cfg.use_instance_coeff else None
         
-        labels = [None] * len(targets) #cw : Used in semantic segmentation loss
+        #cw : Used in semantic segmentation loss
+        labels = [None] * len(targets) 
 
         batch_size = loc_data.size(0)
         num_priors = priors.size(0)
@@ -236,9 +237,11 @@ class MultiBoxLoss(nn.Module):
         if cfg.use_maskiou and maskiou_targets is not None:
             losses['I'] = self.mask_iou_loss(net, maskiou_targets)
 
-        # These losses also don't depend on anchors
+        # These losses also don't depend on anchors :cw  안씀
         if cfg.use_class_existence_loss:
             losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
+        
+        #cw 사용
         if cfg.use_semantic_segmentation_loss:
             losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
 
@@ -266,17 +269,22 @@ class MultiBoxLoss(nn.Module):
 
     def semantic_segmentation_loss(self, segment_data, mask_t, class_t, interpolation_mode='bilinear'):
         # Note num_classes here is without the background class so cfg.num_classes-1
+        #cw : segment_data = prediction['segm']
         batch_size, num_classes, mask_h, mask_w = segment_data.size()
         loss_s = 0
         
         for idx in range(batch_size):
-            cur_segment = segment_data[idx]
-            cur_class_t = class_t[idx]
+            cur_segment = segment_data[idx] #cw : [numclasses, mask_h, mask_w]
+            cur_class_t = class_t[idx] #cw: class_t[idx] = label[idx] // idx번째 배치샘플의 prior boxes의 클래스
+            #[num_priorboxes]
 
             with torch.no_grad():
+                #cw: 
                 downsampled_masks = F.interpolate(mask_t[idx].unsqueeze(0), (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
                 downsampled_masks = downsampled_masks.gt(0.5).float()
+                #cw: torch.gt(input, other, out=None) → Tensor
+                # input > other(0.5) 인 boolTensor를 반환
                 
                 # Construct Semantic Segmentation
                 segment_t = torch.zeros_like(cur_segment, requires_grad=False)
