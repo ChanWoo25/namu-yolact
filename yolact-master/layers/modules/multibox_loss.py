@@ -167,14 +167,19 @@ class MultiBoxLoss(nn.Module):
             gt_box_t[idx, :, :] = truths[idx_t[idx]]
 
         # wrap targets
+        #cw: Torch텐서로 변환 with NO GRAD
+        
         loc_t = Variable(loc_t, requires_grad=False)
+        # conf_t -- (batch_size, num_priors) 각 prior box에 대해 객체일 점수
         conf_t = Variable(conf_t, requires_grad=False)
+        # idx_t -- (batch_size, num_priors) match성공한 priorbox에대해서 1.
         idx_t = Variable(idx_t, requires_grad=False)
 
+        #cw: pos -- (batch_size, num_priors) 인 bool Tensor
         pos = conf_t > 0
         num_pos = pos.sum(dim=1, keepdim=True)
         
-        # Shape: [batch,num_priors,4]
+        # pos_idx -- (batch, num_priors, 4)
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
         
         losses = {}
@@ -220,20 +225,20 @@ class MultiBoxLoss(nn.Module):
                         losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
 
         #cw: Confidence loss - yolact_plus_config 에서 쓰이지 않음 (논문 저자의 다방면 실험을 위해서 필요했던듯?)
-        if cfg.use_focal_loss:
-            if cfg.use_sigmoid_focal_loss:
-                losses['C'] = self.focal_conf_sigmoid_loss(conf_data, conf_t)
-            elif cfg.use_objectness_score:
-                losses['C'] = self.focal_conf_objectness_loss(conf_data, conf_t)
-            else:
-                losses['C'] = self.focal_conf_loss(conf_data, conf_t)
-        else:
-            if cfg.use_objectness_score:
-                losses['C'] = self.conf_objectness_loss(conf_data, conf_t, batch_size, loc_p, loc_t, priors)
-            else:   
-                losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
+        # if cfg.use_focal_loss:
+        #     if cfg.use_sigmoid_focal_loss:
+        #         losses['C'] = self.focal_conf_sigmoid_loss(conf_data, conf_t)
+        #     elif cfg.use_objectness_score:
+        #         losses['C'] = self.focal_conf_objectness_loss(conf_data, conf_t)
+        #     else:
+        #         losses['C'] = self.focal_conf_loss(conf_data, conf_t)
+        # else:
+        #     if cfg.use_objectness_score:
+        #         losses['C'] = self.conf_objectness_loss(conf_data, conf_t, batch_size, loc_p, loc_t, priors)
+        #     else:   
+        #         losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
 
-        #cw: Mask IoU Loss
+        #cw: yolact_plus : True
         if cfg.use_maskiou and maskiou_targets is not None:
             losses['I'] = self.mask_iou_loss(net, maskiou_targets)
 
@@ -267,6 +272,7 @@ class MultiBoxLoss(nn.Module):
     def class_existence_loss(self, class_data, class_existence_t):
         return cfg.class_existence_alpha * F.binary_cross_entropy_with_logits(class_data, class_existence_t, reduction='sum')
 
+    #cw : prediction된 마스크 segment_data와 GT인 mask_t를 비교하여 per class per pixel loss를 평균내어 반환.
     def semantic_segmentation_loss(self, segment_data, mask_t, class_t, interpolation_mode='bilinear'):
         # Note num_classes here is without the background class so cfg.num_classes-1
         #cw : segment_data = prediction['segm']
@@ -279,7 +285,8 @@ class MultiBoxLoss(nn.Module):
             #[num_priorboxes]
 
             with torch.no_grad():
-                #cw: 
+                #cw: Ground-Truth를 bilinear interpolation을 통해 prediction segmentation과 크기를 맞춰준다.
+                #    이 과정에서 1이었던 값들이 나누어져 값들이 작아졌을 텐데, 0.5이상인 부분을 다시 1로 세팅해주어 GT역할을 하게 한다.
                 downsampled_masks = F.interpolate(mask_t[idx].unsqueeze(0), (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
                 downsampled_masks = downsampled_masks.gt(0.5).float()
@@ -287,6 +294,7 @@ class MultiBoxLoss(nn.Module):
                 # input > other(0.5) 인 boolTensor를 반환
                 
                 # Construct Semantic Segmentation
+                #cw : [num_objs, h, w]인 텐서를 [num_classes, mask_h, mask_w]형식으로 변형.
                 segment_t = torch.zeros_like(cur_segment, requires_grad=False)
                 for obj_idx in range(downsampled_masks.size(0)):
                     segment_t[cur_class_t[obj_idx]] = torch.max(segment_t[cur_class_t[obj_idx]], downsampled_masks[obj_idx])
@@ -296,272 +304,17 @@ class MultiBoxLoss(nn.Module):
         return loss_s / mask_h / mask_w * cfg.semantic_segmentation_alpha
 
 
-    def ohem_conf_loss(self, conf_data, conf_t, pos, num):
-        # Compute max conf across batch for hard negative mining
-        batch_conf = conf_data.view(-1, self.num_classes)
-        if cfg.ohem_use_most_confident:
-            # i.e. max(softmax) along classes > 0 
-            batch_conf = F.softmax(batch_conf, dim=1)
-            loss_c, _ = batch_conf[:, 1:].max(dim=1)
-        else:
-            # i.e. -softmax(class 0 confidence)
-            loss_c = log_sum_exp(batch_conf) - batch_conf[:, 0]
-
-        # Hard Negative Mining
-        loss_c = loss_c.view(num, -1)
-        loss_c[pos]        = 0 # filter out pos boxes
-        loss_c[conf_t < 0] = 0 # filter out neutrals (conf_t = -1)
-        _, loss_idx = loss_c.sort(1, descending=True)
-        _, idx_rank = loss_idx.sort(1)
-        num_pos = pos.long().sum(1, keepdim=True)
-        num_neg = torch.clamp(self.negpos_ratio*num_pos, max=pos.size(1)-1)
-        neg = idx_rank < num_neg.expand_as(idx_rank)
-        
-        # Just in case there aren't enough negatives, don't start using positives as negatives
-        neg[pos]        = 0
-        neg[conf_t < 0] = 0 # Filter out neutrals
-
-        # Confidence Loss Including Positive and Negative Examples
-        pos_idx = pos.unsqueeze(2).expand_as(conf_data)
-        neg_idx = neg.unsqueeze(2).expand_as(conf_data)
-        conf_p = conf_data[(pos_idx+neg_idx).gt(0)].view(-1, self.num_classes)
-        targets_weighted = conf_t[(pos+neg).gt(0)]
-        loss_c = F.cross_entropy(conf_p, targets_weighted, reduction='none')
-
-        if cfg.use_class_balanced_conf:
-            # Lazy initialization
-            if self.class_instances is None:
-                self.class_instances = torch.zeros(self.num_classes, device=targets_weighted.device)
-            
-            classes, counts = targets_weighted.unique(return_counts=True)
-            
-            for _cls, _cnt in zip(classes.cpu().numpy(), counts.cpu().numpy()):
-                self.class_instances[_cls] += _cnt
-
-            self.total_instances += targets_weighted.size(0)
-
-            weighting = 1 - (self.class_instances[targets_weighted] / self.total_instances)
-            weighting = torch.clamp(weighting, min=1/self.num_classes)
-
-            # If you do the math, the average weight of self.class_instances is this
-            avg_weight = (self.num_classes - 1) / self.num_classes
-
-            loss_c = (loss_c * weighting).sum() / avg_weight
-        else:
-            loss_c = loss_c.sum()
-        
-        return cfg.conf_alpha * loss_c
-
-    def focal_conf_loss(self, conf_data, conf_t):
-        """
-        Focal loss as described in https://arxiv.org/pdf/1708.02002.pdf
-        Adapted from https://github.com/clcarwin/focal_loss_pytorch/blob/master/focalloss.py
-        Note that this uses softmax and not the original sigmoid from the paper.
-        """
-        conf_t = conf_t.view(-1) # [batch_size*num_priors]
-        conf_data = conf_data.view(-1, conf_data.size(-1)) # [batch_size*num_priors, num_classes]
-
-        # Ignore neutral samples (class < 0)
-        keep = (conf_t >= 0).float()
-        conf_t[conf_t < 0] = 0 # so that gather doesn't drum up a fuss
-
-        logpt = F.log_softmax(conf_data, dim=-1)
-        logpt = logpt.gather(1, conf_t.unsqueeze(-1))
-        logpt = logpt.view(-1)
-        pt    = logpt.exp()
-
-        # I adapted the alpha_t calculation here from
-        # https://github.com/pytorch/pytorch/blob/master/modules/detectron/softmax_focal_loss_op.cu
-        # You'd think you want all the alphas to sum to one, but in the original implementation they
-        # just give background an alpha of 1-alpha and each forground an alpha of alpha.
-        background = (conf_t == 0).float()
-        at = (1 - cfg.focal_loss_alpha) * background + cfg.focal_loss_alpha * (1 - background)
-
-        loss = -at * (1 - pt) ** cfg.focal_loss_gamma * logpt
-
-        # See comment above for keep
-        return cfg.conf_alpha * (loss * keep).sum()
-    
-    def focal_conf_sigmoid_loss(self, conf_data, conf_t):
-        """
-        Focal loss but using sigmoid like the original paper.
-        Note: To make things mesh easier, the network still predicts 81 class confidences in this mode.
-              Because retinanet originally only predicts 80, we simply just don't use conf_data[..., 0]
-        """
-        num_classes = conf_data.size(-1)
-
-        conf_t = conf_t.view(-1) # [batch_size*num_priors]
-        conf_data = conf_data.view(-1, num_classes) # [batch_size*num_priors, num_classes]
-
-        # Ignore neutral samples (class < 0)
-        keep = (conf_t >= 0).float()
-        conf_t[conf_t < 0] = 0 # can't mask with -1, so filter that out
-
-        # Compute a one-hot embedding of conf_t
-        # From https://github.com/kuangliu/pytorch-retinanet/blob/master/utils.py
-        conf_one_t = torch.eye(num_classes, device=conf_t.get_device())[conf_t]
-        conf_pm_t  = conf_one_t * 2 - 1 # -1 if background, +1 if forground for specific class
-
-        logpt = F.logsigmoid(conf_data * conf_pm_t) # note: 1 - sigmoid(x) = sigmoid(-x)
-        pt    = logpt.exp()
-
-        at = cfg.focal_loss_alpha * conf_one_t + (1 - cfg.focal_loss_alpha) * (1 - conf_one_t)
-        at[..., 0] = 0 # Set alpha for the background class to 0 because sigmoid focal loss doesn't use it
-
-        loss = -at * (1 - pt) ** cfg.focal_loss_gamma * logpt
-        loss = keep * loss.sum(dim=-1)
-
-        return cfg.conf_alpha * loss.sum()
-    
-    def focal_conf_objectness_loss(self, conf_data, conf_t):
-        """
-        Instead of using softmax, use class[0] to be the objectness score and do sigmoid focal loss on that.
-        Then for the rest of the classes, softmax them and apply CE for only the positive examples.
-
-        If class[0] = 1 implies forground and class[0] = 0 implies background then you achieve something
-        similar during test-time to softmax by setting class[1:] = softmax(class[1:]) * class[0] and invert class[0].
-        """
-
-        conf_t = conf_t.view(-1) # [batch_size*num_priors]
-        conf_data = conf_data.view(-1, conf_data.size(-1)) # [batch_size*num_priors, num_classes]
-
-        # Ignore neutral samples (class < 0)
-        keep = (conf_t >= 0).float()
-        conf_t[conf_t < 0] = 0 # so that gather doesn't drum up a fuss
-
-        background = (conf_t == 0).float()
-        at = (1 - cfg.focal_loss_alpha) * background + cfg.focal_loss_alpha * (1 - background)
-
-        logpt = F.logsigmoid(conf_data[:, 0]) * (1 - background) + F.logsigmoid(-conf_data[:, 0]) * background
-        pt    = logpt.exp()
-
-        obj_loss = -at * (1 - pt) ** cfg.focal_loss_gamma * logpt
-
-        # All that was the objectiveness loss--now time for the class confidence loss
-        pos_mask = conf_t > 0
-        conf_data_pos = (conf_data[:, 1:])[pos_mask] # Now this has just 80 classes
-        conf_t_pos    = conf_t[pos_mask] - 1         # So subtract 1 here
-
-        class_loss = F.cross_entropy(conf_data_pos, conf_t_pos, reduction='sum')
-
-        return cfg.conf_alpha * (class_loss + (obj_loss * keep).sum())
-    
-    def conf_objectness_loss(self, conf_data, conf_t, batch_size, loc_p, loc_t, priors):
-        """
-        Instead of using softmax, use class[0] to be p(obj) * p(IoU) as in YOLO.
-        Then for the rest of the classes, softmax them and apply CE for only the positive examples.
-        """
-
-        conf_t = conf_t.view(-1) # [batch_size*num_priors]
-        conf_data = conf_data.view(-1, conf_data.size(-1)) # [batch_size*num_priors, num_classes]
-
-        pos_mask = (conf_t > 0)
-        neg_mask = (conf_t == 0)
-
-        obj_data = conf_data[:, 0]
-        obj_data_pos = obj_data[pos_mask]
-        obj_data_neg = obj_data[neg_mask]
-
-        # Don't be confused, this is just binary cross entropy similified
-        obj_neg_loss = - F.logsigmoid(-obj_data_neg).sum()
-
-        with torch.no_grad():
-            pos_priors = priors.unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, 4)[pos_mask, :]
-
-            boxes_pred = decode(loc_p, pos_priors, cfg.use_yolo_regressors)
-            boxes_targ = decode(loc_t, pos_priors, cfg.use_yolo_regressors)
-
-            iou_targets = elemwise_box_iou(boxes_pred, boxes_targ)
-
-        obj_pos_loss = - iou_targets * F.logsigmoid(obj_data_pos) - (1 - iou_targets) * F.logsigmoid(-obj_data_pos)
-        obj_pos_loss = obj_pos_loss.sum()
-
-        # All that was the objectiveness loss--now time for the class confidence loss
-        conf_data_pos = (conf_data[:, 1:])[pos_mask] # Now this has just 80 classes
-        conf_t_pos    = conf_t[pos_mask] - 1         # So subtract 1 here
-
-        class_loss = F.cross_entropy(conf_data_pos, conf_t_pos, reduction='sum')
-
-        return cfg.conf_alpha * (class_loss + obj_pos_loss + obj_neg_loss)
-
-
-    def direct_mask_loss(self, pos_idx, idx_t, loc_data, mask_data, priors, masks):
-        """ Crops the gt masks using the predicted bboxes, scales them down, and outputs the BCE loss. """
-        loss_m = 0
-        for idx in range(mask_data.size(0)):
-            with torch.no_grad():
-                cur_pos_idx = pos_idx[idx, :, :]
-                cur_pos_idx_squeezed = cur_pos_idx[:, 1]
-
-                # Shape: [num_priors, 4], decoded predicted bboxes
-                pos_bboxes = decode(loc_data[idx, :, :], priors.data, cfg.use_yolo_regressors)
-                pos_bboxes = pos_bboxes[cur_pos_idx].view(-1, 4).clamp(0, 1)
-                pos_lookup = idx_t[idx, cur_pos_idx_squeezed]
-
-                cur_masks = masks[idx]
-                pos_masks = cur_masks[pos_lookup, :, :]
-                
-                # Convert bboxes to absolute coordinates
-                num_pos, img_height, img_width = pos_masks.size()
-
-                # Take care of all the bad behavior that can be caused by out of bounds coordinates
-                x1, x2 = sanitize_coordinates(pos_bboxes[:, 0], pos_bboxes[:, 2], img_width)
-                y1, y2 = sanitize_coordinates(pos_bboxes[:, 1], pos_bboxes[:, 3], img_height)
-
-                # Crop each gt mask with the predicted bbox and rescale to the predicted mask size
-                # Note that each bounding box crop is a different size so I don't think we can vectorize this
-                scaled_masks = []
-                for jdx in range(num_pos):
-                    tmp_mask = pos_masks[jdx, y1[jdx]:y2[jdx], x1[jdx]:x2[jdx]]
-
-                    # Restore any dimensions we've left out because our bbox was 1px wide
-                    while tmp_mask.dim() < 2:
-                        tmp_mask = tmp_mask.unsqueeze(0)
-
-                    new_mask = F.adaptive_avg_pool2d(tmp_mask.unsqueeze(0), cfg.mask_size)
-                    scaled_masks.append(new_mask.view(1, -1))
-
-                mask_t = torch.cat(scaled_masks, 0).gt(0.5).float() # Threshold downsampled mask
-            
-            pos_mask_data = mask_data[idx, cur_pos_idx_squeezed, :]
-            loss_m += F.binary_cross_entropy(torch.clamp(pos_mask_data, 0, 1), mask_t, reduction='sum') * cfg.mask_alpha
-
-        return loss_m
-    
-
-    def coeff_diversity_loss(self, coeffs, instance_t):
-        """
-        coeffs     should be size [num_pos, num_coeffs]
-        instance_t should be size [num_pos] and be values from 0 to num_instances-1
-        """
-        num_pos = coeffs.size(0)
-        instance_t = instance_t.view(-1) # juuuust to make sure
-
-        coeffs_norm = F.normalize(coeffs, dim=1)
-        cos_sim = coeffs_norm @ coeffs_norm.t()
-
-        inst_eq = (instance_t[:, None].expand_as(cos_sim) == instance_t[None, :].expand_as(cos_sim)).float()
-
-        # Rescale to be between 0 and 1
-        cos_sim = (cos_sim + 1) / 2
-
-        # If they're the same instance, use cosine distance, else use cosine similarity
-        loss = (1 - cos_sim) * inst_eq + cos_sim * (1 - inst_eq)
-
-        # Only divide by num_pos once because we're summing over a num_pos x num_pos tensor
-        # and all the losses will be divided by num_pos at the end, so just one extra time.
-        return cfg.mask_proto_coeff_diversity_alpha * loss.sum() / num_pos
-
-
+## ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, score_data, inst_data, labels)
     def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, score_data, inst_data, labels, interpolation_mode='bilinear'):
-        #cw: (batch_size, mask_h, mask_w, mask_dim)
+        #cw: proto_data : (batch_size, mask_h, mask_w, mask_dim) mask_dim은 k값 말하는 것 같음.
+        # mask_data : (batch_size, num_priors, mask_dim)
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
         
         #cw : 둘 다 True
         process_gt_bboxes = cfg.mask_proto_normalize_emulate_roi_pooling or cfg.mask_proto_crop
         
-        #cw: default로 False
+        #cw: yolact_plus -- False
         if cfg.mask_proto_remove_empty_masks: 
             # Make sure to store a copy of this because we edit it to get rid of all-zero masks
             pos = pos.clone()
@@ -573,15 +326,24 @@ class MultiBoxLoss(nn.Module):
         maskiou_net_input_list = []
         label_t_list = []
 
-        for idx in range(mask_data.size(0)):
+        #cw: masks -- (num_objs,im_height,im_width)
+
+        for idx in range(mask_data.size(0)):    
+            #cw : 1. mask를 재조정하는 과정
             with torch.no_grad():
                 downsampled_masks = F.interpolate(masks[idx].unsqueeze(0), (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
-                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()
+                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous() 
+                #cw : permute를 거침으로써 원소들의 메모리 배치가 contiguous하지 않아졌으므로
+                # contiguous() 를 통해 조정.
+                # permute: 차원을 인덱스로 뒤섞어 줌                (h, w, 1)
 
+                #cw : yolact_plus -- True
+                #bilinear interpolate를 거친 GT mask를 다시 0, 1로 재조정합니다.(threshold == 0.5)
                 if cfg.mask_proto_binarize_downsampled_gt:
                     downsampled_masks = downsampled_masks.gt(0.5).float()
 
+                #cw : NOT NEEDED
                 if cfg.mask_proto_remove_empty_masks:
                     # Get rid of gt masks that are so small they get downsampled away
                     very_small_masks = (downsampled_masks.sum(dim=(0,1)) <= 0.0001)
@@ -589,6 +351,7 @@ class MultiBoxLoss(nn.Module):
                         if very_small_masks[i]:
                             pos[idx, idx_t[idx] == i] = 0
 
+                #cw : NOT NEEDED
                 if cfg.mask_proto_reweight_mask_loss:
                     # Ensure that the gt is binary
                     if not cfg.mask_proto_binarize_downsampled_gt:
@@ -602,12 +365,18 @@ class MultiBoxLoss(nn.Module):
                     mask_reweighting   = gt_foreground_norm * cfg.mask_proto_reweight_coeff + gt_background_norm
                     mask_reweighting  *= mask_h * mask_w
 
-            cur_pos = pos[idx]
-            pos_idx_t = idx_t[idx, cur_pos]
+            #cw: 2. 
             
+            #idx번째 배치샘플의 prior box중 confidence통과한 애들의 index만 가지고 있음
+            cur_pos = pos[idx] 
+            # match를 통과한 idx_t에서 cur_pos에서 True나온 부분들을 빼냄.
+            # 본래 idx_t에서 골라진 애들은 cur_pos와 동일한게 perfect한것.
+            pos_idx_t = idx_t[idx, cur_pos] # 그런애들을 따로 빼냄
+            
+            #cw : True
             if process_gt_bboxes:
                 # Note: this is in point-form
-                if cfg.mask_proto_crop_with_pred_box:
+                if cfg.mask_proto_crop_with_pred_box: #False
                     pos_gt_box_t = decode(loc_data[idx, :, :], priors.data, cfg.use_yolo_regressors)[cur_pos]
                 else:
                     pos_gt_box_t = gt_box_t[idx, cur_pos]
@@ -620,6 +389,7 @@ class MultiBoxLoss(nn.Module):
             if cfg.use_mask_scoring:
                 mask_scores = score_data[idx, cur_pos, :]
 
+            #cw : NOT NEEDED
             if cfg.mask_proto_coeff_diversity_loss:
                 if inst_data is not None:
                     div_coeffs = inst_data[idx, cur_pos, :]
@@ -686,6 +456,7 @@ class MultiBoxLoss(nn.Module):
 
             loss_m += torch.sum(pre_loss)
 
+            #cw : yolact_plus -- True
             if cfg.use_maskiou:
                 if cfg.discard_mask_area > 0:
                     gt_mask_area = torch.sum(mask_t, dim=(0, 1))
@@ -709,6 +480,7 @@ class MultiBoxLoss(nn.Module):
         
         losses = {'M': loss_m * cfg.mask_alpha / mask_h / mask_w}
         
+        #cw : NOT NEEDED
         if cfg.mask_proto_coeff_diversity_loss:
             losses['D'] = loss_d
 
@@ -733,6 +505,7 @@ class MultiBoxLoss(nn.Module):
 
         return losses
 
+    #cw : 정확히 차원이 일치하는 두 mask의 IOU를 계산하여 반환.
     def _mask_iou(self, mask1, mask2):
         intersection = torch.sum(mask1*mask2, dim=(0, 1))
         area1 = torch.sum(mask1, dim=(0, 1))
@@ -752,3 +525,263 @@ class MultiBoxLoss(nn.Module):
         loss_i = F.smooth_l1_loss(maskiou_p, maskiou_t, reduction='sum')
         
         return loss_i * cfg.maskiou_alpha
+
+
+
+
+    #cw : NOT NEEDED.
+    # def ohem_conf_loss(self, conf_data, conf_t, pos, num):
+    #     # Compute max conf across batch for hard negative mining
+    #     batch_conf = conf_data.view(-1, self.num_classes)
+    #     if cfg.ohem_use_most_confident:
+    #         # i.e. max(softmax) along classes > 0 
+    #         batch_conf = F.softmax(batch_conf, dim=1)
+    #         loss_c, _ = batch_conf[:, 1:].max(dim=1)
+    #     else:
+    #         # i.e. -softmax(class 0 confidence)
+    #         loss_c = log_sum_exp(batch_conf) - batch_conf[:, 0]
+
+    #     # Hard Negative Mining
+    #     loss_c = loss_c.view(num, -1)
+    #     loss_c[pos]        = 0 # filter out pos boxes
+    #     loss_c[conf_t < 0] = 0 # filter out neutrals (conf_t = -1)
+    #     _, loss_idx = loss_c.sort(1, descending=True)
+    #     _, idx_rank = loss_idx.sort(1)
+    #     num_pos = pos.long().sum(1, keepdim=True)
+    #     num_neg = torch.clamp(self.negpos_ratio*num_pos, max=pos.size(1)-1)
+    #     neg = idx_rank < num_neg.expand_as(idx_rank)
+        
+    #     # Just in case there aren't enough negatives, don't start using positives as negatives
+    #     neg[pos]        = 0
+    #     neg[conf_t < 0] = 0 # Filter out neutrals
+
+    #     # Confidence Loss Including Positive and Negative Examples
+    #     pos_idx = pos.unsqueeze(2).expand_as(conf_data)
+    #     neg_idx = neg.unsqueeze(2).expand_as(conf_data)
+    #     conf_p = conf_data[(pos_idx+neg_idx).gt(0)].view(-1, self.num_classes)
+    #     targets_weighted = conf_t[(pos+neg).gt(0)]
+    #     loss_c = F.cross_entropy(conf_p, targets_weighted, reduction='none')
+
+    #     if cfg.use_class_balanced_conf:
+    #         # Lazy initialization
+    #         if self.class_instances is None:
+    #             self.class_instances = torch.zeros(self.num_classes, device=targets_weighted.device)
+            
+    #         classes, counts = targets_weighted.unique(return_counts=True)
+            
+    #         for _cls, _cnt in zip(classes.cpu().numpy(), counts.cpu().numpy()):
+    #             self.class_instances[_cls] += _cnt
+
+    #         self.total_instances += targets_weighted.size(0)
+
+    #         weighting = 1 - (self.class_instances[targets_weighted] / self.total_instances)
+    #         weighting = torch.clamp(weighting, min=1/self.num_classes)
+
+    #         # If you do the math, the average weight of self.class_instances is this
+    #         avg_weight = (self.num_classes - 1) / self.num_classes
+
+    #         loss_c = (loss_c * weighting).sum() / avg_weight
+    #     else:
+    #         loss_c = loss_c.sum()
+        
+    #     return cfg.conf_alpha * loss_c
+
+    # def focal_conf_loss(self, conf_data, conf_t):
+    #     """
+    #     Focal loss as described in https://arxiv.org/pdf/1708.02002.pdf
+    #     Adapted from https://github.com/clcarwin/focal_loss_pytorch/blob/master/focalloss.py
+    #     Note that this uses softmax and not the original sigmoid from the paper.
+    #     """
+    #     conf_t = conf_t.view(-1) # [batch_size*num_priors]
+    #     conf_data = conf_data.view(-1, conf_data.size(-1)) # [batch_size*num_priors, num_classes]
+
+    #     # Ignore neutral samples (class < 0)
+    #     keep = (conf_t >= 0).float()
+    #     conf_t[conf_t < 0] = 0 # so that gather doesn't drum up a fuss
+
+    #     logpt = F.log_softmax(conf_data, dim=-1)
+    #     logpt = logpt.gather(1, conf_t.unsqueeze(-1))
+    #     logpt = logpt.view(-1)
+    #     pt    = logpt.exp()
+
+    #     # I adapted the alpha_t calculation here from
+    #     # https://github.com/pytorch/pytorch/blob/master/modules/detectron/softmax_focal_loss_op.cu
+    #     # You'd think you want all the alphas to sum to one, but in the original implementation they
+    #     # just give background an alpha of 1-alpha and each forground an alpha of alpha.
+    #     background = (conf_t == 0).float()
+    #     at = (1 - cfg.focal_loss_alpha) * background + cfg.focal_loss_alpha * (1 - background)
+
+    #     loss = -at * (1 - pt) ** cfg.focal_loss_gamma * logpt
+
+    #     # See comment above for keep
+    #     return cfg.conf_alpha * (loss * keep).sum()
+    
+    # def focal_conf_sigmoid_loss(self, conf_data, conf_t):
+    #     """
+    #     Focal loss but using sigmoid like the original paper.
+    #     Note: To make things mesh easier, the network still predicts 81 class confidences in this mode.
+    #           Because retinanet originally only predicts 80, we simply just don't use conf_data[..., 0]
+    #     """
+    #     num_classes = conf_data.size(-1)
+
+    #     conf_t = conf_t.view(-1) # [batch_size*num_priors]
+    #     conf_data = conf_data.view(-1, num_classes) # [batch_size*num_priors, num_classes]
+
+    #     # Ignore neutral samples (class < 0)
+    #     keep = (conf_t >= 0).float()
+    #     conf_t[conf_t < 0] = 0 # can't mask with -1, so filter that out
+
+    #     # Compute a one-hot embedding of conf_t
+    #     # From https://github.com/kuangliu/pytorch-retinanet/blob/master/utils.py
+    #     conf_one_t = torch.eye(num_classes, device=conf_t.get_device())[conf_t]
+    #     conf_pm_t  = conf_one_t * 2 - 1 # -1 if background, +1 if forground for specific class
+
+    #     logpt = F.logsigmoid(conf_data * conf_pm_t) # note: 1 - sigmoid(x) = sigmoid(-x)
+    #     pt    = logpt.exp()
+
+    #     at = cfg.focal_loss_alpha * conf_one_t + (1 - cfg.focal_loss_alpha) * (1 - conf_one_t)
+    #     at[..., 0] = 0 # Set alpha for the background class to 0 because sigmoid focal loss doesn't use it
+
+    #     loss = -at * (1 - pt) ** cfg.focal_loss_gamma * logpt
+    #     loss = keep * loss.sum(dim=-1)
+
+    #     return cfg.conf_alpha * loss.sum()
+    
+    # def focal_conf_objectness_loss(self, conf_data, conf_t):
+    #     """
+    #     Instead of using softmax, use class[0] to be the objectness score and do sigmoid focal loss on that.
+    #     Then for the rest of the classes, softmax them and apply CE for only the positive examples.
+
+    #     If class[0] = 1 implies forground and class[0] = 0 implies background then you achieve something
+    #     similar during test-time to softmax by setting class[1:] = softmax(class[1:]) * class[0] and invert class[0].
+    #     """
+
+    #     conf_t = conf_t.view(-1) # [batch_size*num_priors]
+    #     conf_data = conf_data.view(-1, conf_data.size(-1)) # [batch_size*num_priors, num_classes]
+
+    #     # Ignore neutral samples (class < 0)
+    #     keep = (conf_t >= 0).float()
+    #     conf_t[conf_t < 0] = 0 # so that gather doesn't drum up a fuss
+
+    #     background = (conf_t == 0).float()
+    #     at = (1 - cfg.focal_loss_alpha) * background + cfg.focal_loss_alpha * (1 - background)
+
+    #     logpt = F.logsigmoid(conf_data[:, 0]) * (1 - background) + F.logsigmoid(-conf_data[:, 0]) * background
+    #     pt    = logpt.exp()
+
+    #     obj_loss = -at * (1 - pt) ** cfg.focal_loss_gamma * logpt
+
+    #     # All that was the objectiveness loss--now time for the class confidence loss
+    #     pos_mask = conf_t > 0
+    #     conf_data_pos = (conf_data[:, 1:])[pos_mask] # Now this has just 80 classes
+    #     conf_t_pos    = conf_t[pos_mask] - 1         # So subtract 1 here
+
+    #     class_loss = F.cross_entropy(conf_data_pos, conf_t_pos, reduction='sum')
+
+    #     return cfg.conf_alpha * (class_loss + (obj_loss * keep).sum())
+    
+    # def conf_objectness_loss(self, conf_data, conf_t, batch_size, loc_p, loc_t, priors):
+    #     """
+    #     Instead of using softmax, use class[0] to be p(obj) * p(IoU) as in YOLO.
+    #     Then for the rest of the classes, softmax them and apply CE for only the positive examples.
+    #     """
+
+    #     conf_t = conf_t.view(-1) # [batch_size*num_priors]
+    #     conf_data = conf_data.view(-1, conf_data.size(-1)) # [batch_size*num_priors, num_classes]
+
+    #     pos_mask = (conf_t > 0)
+    #     neg_mask = (conf_t == 0)
+
+    #     obj_data = conf_data[:, 0]
+    #     obj_data_pos = obj_data[pos_mask]
+    #     obj_data_neg = obj_data[neg_mask]
+
+    #     # Don't be confused, this is just binary cross entropy similified
+    #     obj_neg_loss = - F.logsigmoid(-obj_data_neg).sum()
+
+    #     with torch.no_grad():
+    #         pos_priors = priors.unsqueeze(0).expand(batch_size, -1, -1).reshape(-1, 4)[pos_mask, :]
+
+    #         boxes_pred = decode(loc_p, pos_priors, cfg.use_yolo_regressors)
+    #         boxes_targ = decode(loc_t, pos_priors, cfg.use_yolo_regressors)
+
+    #         iou_targets = elemwise_box_iou(boxes_pred, boxes_targ)
+
+    #     obj_pos_loss = - iou_targets * F.logsigmoid(obj_data_pos) - (1 - iou_targets) * F.logsigmoid(-obj_data_pos)
+    #     obj_pos_loss = obj_pos_loss.sum()
+
+    #     # All that was the objectiveness loss--now time for the class confidence loss
+    #     conf_data_pos = (conf_data[:, 1:])[pos_mask] # Now this has just 80 classes
+    #     conf_t_pos    = conf_t[pos_mask] - 1         # So subtract 1 here
+
+    #     class_loss = F.cross_entropy(conf_data_pos, conf_t_pos, reduction='sum')
+
+    #     return cfg.conf_alpha * (class_loss + obj_pos_loss + obj_neg_loss)
+
+
+    # def direct_mask_loss(self, pos_idx, idx_t, loc_data, mask_data, priors, masks):
+    #     """ Crops the gt masks using the predicted bboxes, scales them down, and outputs the BCE loss. """
+    #     loss_m = 0
+    #     for idx in range(mask_data.size(0)):
+    #         with torch.no_grad():
+    #             cur_pos_idx = pos_idx[idx, :, :]
+    #             cur_pos_idx_squeezed = cur_pos_idx[:, 1]
+
+    #             # Shape: [num_priors, 4], decoded predicted bboxes
+    #             pos_bboxes = decode(loc_data[idx, :, :], priors.data, cfg.use_yolo_regressors)
+    #             pos_bboxes = pos_bboxes[cur_pos_idx].view(-1, 4).clamp(0, 1)
+    #             pos_lookup = idx_t[idx, cur_pos_idx_squeezed]
+
+    #             cur_masks = masks[idx]
+    #             pos_masks = cur_masks[pos_lookup, :, :]
+                
+    #             # Convert bboxes to absolute coordinates
+    #             num_pos, img_height, img_width = pos_masks.size()
+
+    #             # Take care of all the bad behavior that can be caused by out of bounds coordinates
+    #             x1, x2 = sanitize_coordinates(pos_bboxes[:, 0], pos_bboxes[:, 2], img_width)
+    #             y1, y2 = sanitize_coordinates(pos_bboxes[:, 1], pos_bboxes[:, 3], img_height)
+
+    #             # Crop each gt mask with the predicted bbox and rescale to the predicted mask size
+    #             # Note that each bounding box crop is a different size so I don't think we can vectorize this
+    #             scaled_masks = []
+    #             for jdx in range(num_pos):
+    #                 tmp_mask = pos_masks[jdx, y1[jdx]:y2[jdx], x1[jdx]:x2[jdx]]
+
+    #                 # Restore any dimensions we've left out because our bbox was 1px wide
+    #                 while tmp_mask.dim() < 2:
+    #                     tmp_mask = tmp_mask.unsqueeze(0)
+
+    #                 new_mask = F.adaptive_avg_pool2d(tmp_mask.unsqueeze(0), cfg.mask_size)
+    #                 scaled_masks.append(new_mask.view(1, -1))
+
+    #             mask_t = torch.cat(scaled_masks, 0).gt(0.5).float() # Threshold downsampled mask
+            
+    #         pos_mask_data = mask_data[idx, cur_pos_idx_squeezed, :]
+    #         loss_m += F.binary_cross_entropy(torch.clamp(pos_mask_data, 0, 1), mask_t, reduction='sum') * cfg.mask_alpha
+
+    #     return loss_m
+    
+
+    # def coeff_diversity_loss(self, coeffs, instance_t):
+    #     """
+    #     coeffs     should be size [num_pos, num_coeffs]
+    #     instance_t should be size [num_pos] and be values from 0 to num_instances-1
+    #     """
+    #     num_pos = coeffs.size(0)
+    #     instance_t = instance_t.view(-1) # juuuust to make sure
+
+    #     coeffs_norm = F.normalize(coeffs, dim=1)
+    #     cos_sim = coeffs_norm @ coeffs_norm.t()
+
+    #     inst_eq = (instance_t[:, None].expand_as(cos_sim) == instance_t[None, :].expand_as(cos_sim)).float()
+
+    #     # Rescale to be between 0 and 1
+    #     cos_sim = (cos_sim + 1) / 2
+
+    #     # If they're the same instance, use cosine distance, else use cosine similarity
+    #     loss = (1 - cos_sim) * inst_eq + cos_sim * (1 - inst_eq)
+
+    #     # Only divide by num_pos once because we're summing over a num_pos x num_pos tensor
+    #     # and all the losses will be divided by num_pos at the end, so just one extra time.
+    #     return cfg.mask_proto_coeff_diversity_alpha * loss.sum() / num_pos
