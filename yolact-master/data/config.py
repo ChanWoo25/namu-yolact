@@ -70,15 +70,17 @@ class Config(object):
 
     def __init__(self, config_dict):
         for key, val in config_dict.items():
-            #cw : dictionary형태로 새로운 key를 만들어줌.
+            #cw : 인자로 dict를 넘기면, dictionary형태로 새로운 key를 만들어줌.
             self.__setattr__(key, val)
 
     def copy(self, new_config_dict={}):
         """
         Copies this config into a new config object, making
         the changes given by new_config_dict.
+        --default : empty dict
         """
 
+        #cw copy를 호출한 Config의 모든 속성을 가지고 와서 new_config_dict를 추가, 변경하여 다시 반환.
         ret = Config(vars(self))
         
         for key, val in new_config_dict.items():
@@ -91,12 +93,15 @@ class Config(object):
         Copies new_config_dict into this config object.
         Note: new_config_dict can also be a config object.
         """
+        #cw new_config_dict가 Config객체이거나 dict일 경우 동작 가능.
         if isinstance(new_config_dict, Config):
             new_config_dict = vars(new_config_dict)
 
+        #cw copy와 비슷한 기능이지만, 카피본을 반환하는게 아니라 self안에서 변경.
         for key, val in new_config_dict.items():
             self.__setattr__(key, val)
     
+    #cw __dict__ 내용 모두 출력.
     def print(self):
         for k, v in vars(self).items():
             print(k, ' = ', v)
@@ -325,6 +330,7 @@ mask_type = Config({
     #   - mask_proto_src (int): The input layer to the mask prototype generation network. This is an
     #                           index in backbone.layers. Use to use the image itself instead.
     #                           cw : 이 int형 변수는 backbone.layers중 하나의 layer를 나타내는 index이다. ->mask_dim을 계산할 때 사용.
+    #                               이 mask_proto_src가 가리키는 layer에서부터 시작하여 prototype을 생성하는 network가 시작된다.
     #
     #   - mask_proto_net (list<tuple>): A list of layers in the mask proto network with the last one
     #                                   being where the masks are taken from. Each conv layer is in
@@ -601,6 +607,8 @@ coco_base_config = Config({
     # Whether or not to do post processing on the cpu at test time
     'force_cpu_nms': True,
 
+    #cw nms를 수행하는 것에 있어서 bbox의 IoU가 아니라 coefficient가 얼마나 비슷한지를 기준으로 걸러낸다는 의미인듯하다.
+    #   하지만 yolact_plus에서 사용되지는 않았다.
     # Whether to use mask coefficient cosine similarity nms instead of bbox iou nms
     'use_coeff_nms': False,
 
@@ -689,7 +697,7 @@ yolact_base_config = coco_base_config.copy({
         'preapply_sqrt': False,
         'use_square_anchors': True, # This is for backward compatability with a bug
 
-        'pred_aspect_ratios': [ [[1, 1/2, 2]] ]*5, #cwq : *5는 왜 붙어있을까?
+        'pred_aspect_ratios': [ [[1, 1/2, 2]] ]*5, 
         'pred_scales': [[24], [48], [96], [192], [384]],
     }),
 
@@ -788,7 +796,7 @@ yolact_plus_base_config = yolact_base_config.copy({
     'name': 'yolact_plus_base',
 
     'backbone': resnet101_dcn_inter3_backbone.copy({
-        'selected_layers': list(range(1, 4)),
+        'selected_layers': list(range(1, 4)), #cw [1, 2, 3]
         
         'pred_aspect_ratios': [ [[1, 1/2, 2]] ]*5,
         'pred_scales': [[i * 2 ** (j / 3.0) for j in range(3)] for i in [24, 48, 96, 192, 384]],
