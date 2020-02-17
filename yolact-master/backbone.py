@@ -452,7 +452,12 @@ class VGGBackbone(nn.Module):
 
 def construct_backbone(cfg): #cw : yolact에서 cfg.backbone을 인자로 넘겨받음.
     """ Constructs a backbone given a backbone config object (see config.py). """
-    backbone = cfg.type(*cfg.args)  # -> ResNetBackbone([3, 4, 23, 3]) -> list는 ResNetBackbone Class의 layers 인자로 들어감.
+    backbone = cfg.type(*cfg.args)  
+    # resnet101_dcn_inter3_backbone = resnet101_backbone.copy({
+    #   'name': 'ResNet101_DCN_Interval3',
+    #   'args': ([3, 4, 23, 3], [0, 4, 23, 3], 3),
+    # })
+    #  -> list는 ResNetBackbone Class의 layers 인자로 들어감.
                                     #cw : resnet-101 config 예 : 'args': ([3, 4, 23, 3],),'type': ResNetBackbone,
                                     #     **keyargs 로 넘길 때 *을 사용하는듯한.
     # Add downsampling layers until we reach the number we need
