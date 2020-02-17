@@ -426,12 +426,13 @@ def prepare_data(datum, devices:list=None, allocation:list=None):
     with torch.no_grad():
         if devices is None:
             devices = ['cuda:0'] if args.cuda else ['cpu']
-        if allocation is None:
+        if allocation is None: #cw 멀티 GPU일 경우 allocation이 각 GPU에 할당할 샘플개수를 list로 지니고 있는다.(sum == batch_size)
             allocation = [args.batch_size // len(devices)] * (len(devices) - 1)
             allocation.append(args.batch_size - sum(allocation)) # The rest might need more/less
         
         images, (targets, masks, num_crowds) = datum
 
+        #cw data를 device로 옮기는 작업
         cur_idx = 0
         for device, alloc in zip(devices, allocation):
             for _ in range(alloc):
@@ -440,6 +441,7 @@ def prepare_data(datum, devices:list=None, allocation:list=None):
                 masks[cur_idx]   = gradinator(masks[cur_idx].to(device))
                 cur_idx += 1
 
+        #cw yp False
         if cfg.preserve_aspect_ratio:
             # Choose a random size from the batch
             _, h, w = images[random.randint(0, len(images)-1)].size()
