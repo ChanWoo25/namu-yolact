@@ -212,6 +212,7 @@ def make_net(in_channels, conf, include_last_relu=True):   # config 세팅 값 �
 
     # Use sum to concat together all the component layer lists
     net = sum([make_layer(x) for x in conf], [])
+    
     if not include_last_relu:
         net = net[:-1] # 마지막 layer 제거(ReLU)
 
