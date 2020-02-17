@@ -400,14 +400,14 @@ class MultiBoxLoss(nn.Module):
             
             # If we have over the allowed number of masks, select a random sample
             old_num_pos = proto_coef.size(0)
-            if old_num_pos > cfg.masks_to_train:
+            if old_num_pos > cfg.masks_to_train:    #cw yolact_plus -- 100개만큼의 mask에 대해서만 훈련.
                 perm = torch.randperm(proto_coef.size(0))
                 select = perm[:cfg.masks_to_train]
 
                 proto_coef = proto_coef[select, :]
                 pos_idx_t  = pos_idx_t[select]
                 
-                if process_gt_bboxes:
+                if process_gt_bboxes: #cw : True
                     pos_gt_box_t = pos_gt_box_t[select, :]
                 if cfg.use_mask_scoring:
                     mask_scores = mask_scores[select, :]
@@ -458,8 +458,9 @@ class MultiBoxLoss(nn.Module):
 
             #cw : yolact_plus -- True
             if cfg.use_maskiou:
+                #cw yolact_plus -- 'discard_mask_area': 5*5,
                 if cfg.discard_mask_area > 0:
-                    gt_mask_area = torch.sum(mask_t, dim=(0, 1))
+                    gt_mask_area = torch.sum(mask_t, dim=(0, 1)) #cw 0과 1차원은 reduced 되고 나머지 차원에 맞게 sum진행.
                     select = gt_mask_area > cfg.discard_mask_area
 
                     if torch.sum(select) < 1:
@@ -484,6 +485,7 @@ class MultiBoxLoss(nn.Module):
         if cfg.mask_proto_coeff_diversity_loss:
             losses['D'] = loss_d
 
+        #cw yolact_plus : True
         if cfg.use_maskiou:
             # discard_mask_area discarded every mask in the batch, so nothing to do here
             if len(maskiou_t_list) == 0:
