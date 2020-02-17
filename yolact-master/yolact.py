@@ -72,7 +72,7 @@ class PredictionModule(nn.Module):
     
     def __init__(self, in_channels, out_channels=1024, aspect_ratios=[[1]], scales=[1], parent=None, index=0):
         super().__init__()
-
+        #cw scales의 원소가 3개 있으면, aspect_ratios는 3개의 list로 구성, 각 list는 해당 스케일에서 bbox의 개수와 비율을 나타냄.
         self.num_classes = cfg.num_classes
         self.mask_dim    = cfg.mask_dim # Defined by Yolact
         self.num_priors  = sum(len(x)*len(scales) for x in aspect_ratios)
@@ -101,9 +101,12 @@ class PredictionModule(nn.Module):
             self.conf_layer = nn.Conv2d(out_channels, self.num_priors * self.num_classes, **cfg.head_layer_params)
             self.mask_layer = nn.Conv2d(out_channels, self.num_priors * self.mask_dim,    **cfg.head_layer_params)
             
+            #cw -- True
             if cfg.use_mask_scoring:
                 self.score_layer = nn.Conv2d(out_channels, self.num_priors, **cfg.head_layer_params)
 
+            #cw -- False // 'num_instance_coeffs': 64,
+            #   bbox IoU가 아니라 coefficient로 loss함수를 내고 싶을 때 사용.
             if cfg.use_instance_coeff:
                 self.inst_layer = nn.Conv2d(out_channels, self.num_priors * cfg.num_instance_coeffs, **cfg.head_layer_params)
             
@@ -118,9 +121,12 @@ class PredictionModule(nn.Module):
                         nn.ReLU(inplace=True)
                     ] for _ in range(num_layers)], []))
 
+            # # Add extra layers between the backbone and the network heads
+            # # The order is (bbox, conf, mask)
+            # 'extra_layers': (0, 0, 0), -> #cw 즉, default설정으로는 아무것도 바뀌지 않는다.
             self.bbox_extra, self.conf_extra, self.mask_extra = [make_extra(x) for x in cfg.extra_layers]
             
-            if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_coeff_gate:
+            if cfg.mask_type == mask_type.lincomb and cfg.mask_proto_coeff_gate:  #cw  True and False.
                 self.gate_layer = nn.Conv2d(out_channels, self.num_priors * self.mask_dim, kernel_size=3, padding=1)
 
         self.aspect_ratios = aspect_ratios
@@ -134,7 +140,7 @@ class PredictionModule(nn.Module):
         """
         Args:
             - x: The convOut from a layer in the backbone network
-                 Size: [batch_size, in_channels, conv_h, conv_w])
+                 Size: [batch_size, in_channels, conv_h, conv_w]) -- channel first type
 
         Returns a tuple (bbox_coords, class_confs, mask_output, prior_boxes) with sizes
             - bbox_coords: [batch_size, conv_h*conv_w*num_priors, 4]
@@ -408,36 +414,42 @@ class Yolact(nn.Module):
         if cfg.mask_type == mask_type.direct:
             cfg.mask_dim = cfg.mask_size**2
         elif cfg.mask_type == mask_type.lincomb:
-            if cfg.mask_proto_use_grid:
+            if cfg.mask_proto_use_grid: #cw default -- False;
                 self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
                 self.num_grids = self.grid.size(0)
             else:
                 self.num_grids = 0
 
-            self.proto_src = cfg.mask_proto_src
+            self.proto_src = cfg.mask_proto_src #cw yolact_plus default:0
             
-            if self.proto_src is None: in_channels = 3
-            elif cfg.fpn is not None: in_channels = cfg.fpn.num_features
+            if self.proto_src is None: in_channels = 3 #cw  0 != None
+            elif cfg.fpn is not None: in_channels = cfg.fpn.num_features #cw fpn.num_features -- default:'num_features': 256,
             else: in_channels = self.backbone.channels[self.proto_src]
-            in_channels += self.num_grids
+            in_channels += self.num_grids #cw (256 + 0)
 
             # The include_last_relu=false here is because we might want to change it to another function
             self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
-
-            if cfg.mask_proto_bias:
+                                                   #256        , 6개의 conv및 bilinear
+            #cw make_net에 넘기는 cfg.mask_proto_net을 in_channels이 통과하였을 때 마지막 output의 채널을 두번째 인자로 반환하므로.
+            #   final in_channels이 cfg.mask_dim이 된다고 보면 되시겠다.
+            if cfg.mask_proto_bias: #cw -- False
                 cfg.mask_dim += 1
 
 
-        self.selected_layers = cfg.backbone.selected_layers
+        self.selected_layers = cfg.backbone.selected_layers #cw yp -- [1, 2, 3]
         src_channels = self.backbone.channels
 
         if cfg.use_maskiou:
             self.maskiou_net = FastMaskIoUNet()
 
+        # 'fpn': fpn_base.copy({
+        #     'use_conv_downsample': True,
+        #     'num_downsample': 2,
+        # }),
         if cfg.fpn is not None:
             # Some hacky rewiring to accomodate the FPN
             self.fpn = FPN([src_channels[i] for i in self.selected_layers])
-            self.selected_layers = list(range(len(self.selected_layers) + cfg.fpn.num_downsample))
+            self.selected_layers = list(range(len(self.selected_layers) + cfg.fpn.num_downsample)) #cw range(4 + 2)
             src_channels = [cfg.fpn.num_features] * len(self.selected_layers)
 
 
@@ -449,7 +461,9 @@ class Yolact(nn.Module):
             parent = None
             if cfg.share_prediction_module and idx > 0:
                 parent = self.prediction_layers[0]
-
+            #cw src_channels는 본래 resnet의 layer_idx의 채널수를 가지고 있음.
+            #   즉, selected layer에서는 bbox를 prediction하는 것.
+            #   call하여 얻은 pred는 prediction_layers에 추가. (selected_layers 수만큼 생성)
             pred = PredictionModule(src_channels[layer_idx], src_channels[layer_idx],
                                     aspect_ratios = cfg.backbone.pred_aspect_ratios[idx],
                                     scales        = cfg.backbone.pred_scales[idx],
@@ -561,6 +575,7 @@ class Yolact(nn.Module):
                 module.weight.requires_grad = enable
                 module.bias.requires_grad = enable
     
+    #cw Yolact를 바로 호출했을시.
     def forward(self, x):
         """ The input should be of size [batch_size, 3, img_h, img_w] """
         _, _, img_h, img_w = x.size()
@@ -649,7 +664,7 @@ class Yolact(nn.Module):
             if cfg.use_mask_scoring:
                 pred_outs['score'] = torch.sigmoid(pred_outs['score'])
 
-            if cfg.use_focal_loss:
+            if cfg.use_focal_loss: #cw yp False
                 if cfg.use_sigmoid_focal_loss:
                     # Note: even though conf[0] exists, this mode doesn't train it so don't use it
                     pred_outs['conf'] = torch.sigmoid(pred_outs['conf'])
@@ -664,7 +679,7 @@ class Yolact(nn.Module):
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
             else:
 
-                if cfg.use_objectness_score:
+                if cfg.use_objectness_score: #cw yp False
                     objectness = torch.sigmoid(pred_outs['conf'][:, :, 0])
                     
                     pred_outs['conf'][:, :, 1:] = (objectness > 0.10)[..., None] \
