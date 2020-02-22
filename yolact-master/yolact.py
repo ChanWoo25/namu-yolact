@@ -295,6 +295,8 @@ class FPN(ScriptModuleWrapper):
         ])
 
         # This is here for backwards compatability
+        # 역전파시 호환되도록 여기에 추가됨.
+        # True
         padding = 1 if cfg.fpn.pad else 0
         self.pred_layers = nn.ModuleList([
             nn.Conv2d(cfg.fpn.num_features, cfg.fpn.num_features, kernel_size=3, padding=padding)
@@ -351,6 +353,7 @@ class FPN(ScriptModuleWrapper):
 
         cur_idx = len(out)
 
+        # 논문에서의 P6, P7층을 생성하는 과정.
         # In the original paper, this takes care of P6
         if self.use_conv_downsample:
             for downsample_layer in self.downsample_layers:
@@ -405,7 +408,7 @@ class Yolact(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.backbone = construct_backbone(cfg.backbone)
+        self.backbone = construct_backbone(cfg.backbone) #resnet101_dcn_inter3_backbone
 
         if cfg.freeze_bn:
             self.freeze_bn()
@@ -414,13 +417,14 @@ class Yolact(nn.Module):
         if cfg.mask_type == mask_type.direct:
             cfg.mask_dim = cfg.mask_size**2
         elif cfg.mask_type == mask_type.lincomb:
-            if cfg.mask_proto_use_grid: #cw default -- False;
+            if cfg.mask_proto_use_grid: #False
                 self.grid = torch.Tensor(np.load(cfg.mask_proto_grid_file))
                 self.num_grids = self.grid.size(0)
             else:
                 self.num_grids = 0
 
-            self.proto_src = cfg.mask_proto_src #cw yolact_plus default:0
+            #cw yolact_plus default:0
+            self.proto_src = cfg.mask_proto_src 
             
             if self.proto_src is None: in_channels = 3 #cw  0 != None
             elif cfg.fpn is not None: in_channels = cfg.fpn.num_features #cw fpn.num_features -- default:'num_features': 256,
@@ -428,17 +432,20 @@ class Yolact(nn.Module):
             in_channels += self.num_grids #cw (256 + 0)
 
             # The include_last_relu=false here is because we might want to change it to another function
+            # 'mask_proto_net': [(256, 3, {'padding': 1})] * 3 + [(None, -2, {}), (256, 3, {'padding': 1})] + [(32, 1, {})],
             self.proto_net, cfg.mask_dim = make_net(in_channels, cfg.mask_proto_net, include_last_relu=False)
                                                    #256        , 6개의 conv및 bilinear
             #cw make_net에 넘기는 cfg.mask_proto_net을 in_channels이 통과하였을 때 마지막 output의 채널을 두번째 인자로 반환하므로.
             #   final in_channels이 cfg.mask_dim이 된다고 보면 되시겠다.
-            if cfg.mask_proto_bias: #cw -- False
+            
+            if cfg.mask_proto_bias: #False
                 cfg.mask_dim += 1
 
 
         self.selected_layers = cfg.backbone.selected_layers #cw yp -- [1, 2, 3]
         src_channels = self.backbone.channels
 
+        #True
         if cfg.use_maskiou:
             self.maskiou_net = FastMaskIoUNet()
 
@@ -446,19 +453,23 @@ class Yolact(nn.Module):
         #     'use_conv_downsample': True,
         #     'num_downsample': 2,
         # }),
+
+        #Fig. 3 PART######################################
         if cfg.fpn is not None:
             # Some hacky rewiring to accomodate the FPN
-            self.fpn = FPN([src_channels[i] for i in self.selected_layers])
+            self.fpn = FPN([src_channels[i] for i in self.selected_layers]) #[256, 256, 256] 넘김.
             self.selected_layers = list(range(len(self.selected_layers) + cfg.fpn.num_downsample)) #cw range(4 + 2)
-            src_channels = [cfg.fpn.num_features] * len(self.selected_layers)
+            src_channels = [cfg.fpn.num_features] * len(self.selected_layers) # [256] * 6
 
 
         self.prediction_layers = nn.ModuleList()
-        cfg.num_heads = len(self.selected_layers)
+        cfg.num_heads = len(self.selected_layers) #6
 
+        #selected_layers : [0, 1, 2, 3, 4, 5]
         for idx, layer_idx in enumerate(self.selected_layers):
             # If we're sharing prediction module weights, have every module's parent be the first one
             parent = None
+            #True
             if cfg.share_prediction_module and idx > 0:
                 parent = self.prediction_layers[0]
             #cw src_channels는 본래 resnet의 layer_idx의 채널수를 가지고 있음.
@@ -470,13 +481,15 @@ class Yolact(nn.Module):
                                     parent        = parent,
                                     index         = idx)
             self.prediction_layers.append(pred)
-
+        ###########################################################
+        
+        #False
         # Extra parameters for the extra losses
         if cfg.use_class_existence_loss:
             # This comes from the smallest layer selected
             # Also note that cfg.num_classes includes background
             self.class_existence_fc = nn.Linear(src_channels[-1], cfg.num_classes - 1)
-        
+        #True
         if cfg.use_semantic_segmentation_loss:
             self.semantic_seg_conv = nn.Conv2d(src_channels[0], cfg.num_classes-1, kernel_size=1)
 
@@ -653,18 +666,18 @@ class Yolact(nn.Module):
 
         if self.training:
             # For the extra loss functions
-            if cfg.use_class_existence_loss:
+            if cfg.use_class_existence_loss:#False
                 pred_outs['classes'] = self.class_existence_fc(outs[-1].mean(dim=(2, 3)))
 
-            if cfg.use_semantic_segmentation_loss:
+            if cfg.use_semantic_segmentation_loss:#True
                 pred_outs['segm'] = self.semantic_seg_conv(outs[0])
 
             return pred_outs
         else:
-            if cfg.use_mask_scoring:
+            if cfg.use_mask_scoring:#False
                 pred_outs['score'] = torch.sigmoid(pred_outs['score'])
 
-            if cfg.use_focal_loss: #cw yp False
+            if cfg.use_focal_loss: #False
                 if cfg.use_sigmoid_focal_loss:
                     # Note: even though conf[0] exists, this mode doesn't train it so don't use it
                     pred_outs['conf'] = torch.sigmoid(pred_outs['conf'])
@@ -679,7 +692,7 @@ class Yolact(nn.Module):
                     pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
             else:
 
-                if cfg.use_objectness_score: #cw yp False
+                if cfg.use_objectness_score: #False
                     objectness = torch.sigmoid(pred_outs['conf'][:, :, 0])
                     
                     pred_outs['conf'][:, :, 1:] = (objectness > 0.10)[..., None] \
