@@ -1115,20 +1115,24 @@ def print_maps(all_maps):
 
 
 if __name__ == '__main__':
-
+    
+    #1
     parse_args()
     # sys args 자동으로 parsing
 
+    #2
     if args.config is not None:
         set_cfg(args.config)
     # config setting
 
+    #3
     if args.trained_model == 'interrupt':
         args.trained_model = SavePath.get_interrupt('weights/')
     elif args.trained_model == 'latest':
         args.trained_model = SavePath.get_latest('weights/', cfg.name)
     # weight load
 
+    #4
     if args.config is None:
         model_path = SavePath.from_str(args.trained_model)
         # TODO: Bad practice? Probably want to do a name lookup instead.
@@ -1171,6 +1175,7 @@ if __name__ == '__main__':
             dataset = None        
         # 처리할 image, video, images 없으면 COCO dataset 활용 
 
+        #5
         print('Loading model...', end='')
         net = Yolact()
         net.load_weights(args.trained_model)
@@ -1181,5 +1186,6 @@ if __name__ == '__main__':
         if args.cuda:
             net = net.cuda()
 
+        #6
         evaluate(net, dataset)
 
