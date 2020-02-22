@@ -37,6 +37,11 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+# parse_args        
+# operation : system의 입력인자를 자동으로 parsing하기 위함.
+#             입력인자를 설정값으로 이용하고, 
+#             입력되지 않는 경우에는 기본값으로 지정, 잘못 입력된 경우 error를 표시해준다.
+#             각 인자에 대한 설명은 add_argument 메서드 호출 시 문자열인 help 값으로 표시된다.
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
@@ -127,22 +132,34 @@ def parse_args(argv=None):
     if args.seed is not None:
         random.seed(args.seed)
 
-iou_thresholds = [x / 100 for x in range(50, 100, 5)]
-coco_cats = {} # Call prep_coco_cats to fill this
-coco_cats_inv = {}
-color_cache = defaultdict(lambda: {})
 
+
+iou_thresholds = [x / 100 for x in range(50, 100, 5)]
+# iou 임계값을 0.5부터 0.95까지 0.05 간격으로 리스트에 저장
+# mAP 계산할 때 crowd를 제외하기 위해 사용된다. 
+coco_cats = {} # Call prep_coco_cats to fill this
+coco_cats_inv = {} 
+# COCO Category를 넣기 위한 딕셔너리  prep_coco_cats 함수에서 채워진다.
+# 처리할 image나 video 지정 안했을 때 COCO dataset에 맞추기 위함.
+color_cache = defaultdict(lambda: {})
+# display할 detection의 color를 빠르게 처리하기 위해 딕셔너리로 저장
+
+# prep_display
+# operation : image에서 평가한 detection을 mask, box, class, confidence score와 함께 그려준다
 def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, mask_alpha=0.45, fps_str=''):
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
     if undo_transform:
         img_numpy = undo_image_transformation(img, w, h)
+        # 변형된 image의 size를 원래대로 resizing
         img_gpu = torch.Tensor(img_numpy).cuda()
     else:
         img_gpu = img / 255.0
         h, w, _ = img.shape
-    
+        # 정규화에 따른 h, w 저장
+    # undo_transform 값에 따라 처리할 image의 size 결정
+
     with timer.env('Postprocess'):
         save = cfg.rescore_bbox
         cfg.rescore_bbox = True
@@ -150,6 +167,9 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                                         crop_masks        = args.crop,
                                         score_threshold   = args.score_threshold)
         cfg.rescore_bbox = save
+    # t에 각 detection의 class index, confidence score, bounding box
+    #                    , full image mask를 tensor로 저장
+    # 자세한 내용은 layer/output_util.py의 postprocess 정의 참조
 
     with timer.env('Copy'):
         idx = t[1].argsort(0, descending=True)[:args.top_k]
@@ -158,12 +178,16 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             # Masks are drawn on the GPU, so don't copy
             masks = t[3][idx]
         classes, scores, boxes = [x[idx].cpu().numpy() for x in t[:3]]
+    # confidence score에 따라 top_k(개)만큼 내림차순으로 선택하여 정렬하고
+    # 정렬된 index에 맞추어 classes, scores, boxes의 텐서 리스트 반환
 
     num_dets_to_consider = min(args.top_k, classes.shape[0])
     for j in range(num_dets_to_consider):
         if scores[j] < args.score_threshold:
             num_dets_to_consider = j
             break
+    # top_k(개)만큼의 detection 중에서 score_threshold보다 낮은 index를 반환하여
+    # 처리할 detection의 수를 감축
 
     # Quick and dirty lambda for selecting the color for a particular index
     # Also keeps track of a per-gpu color cache for maximum speed
@@ -182,6 +206,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                 color = torch.Tensor(color).to(on_gpu).float() / 255.
                 color_cache[on_gpu][color_idx] = color
             return color
+    
+
 
     # First, draw the masks on the GPU where we can do it really fast
     # Beware: very fast but possibly unintelligible mask-drawing code ahead
@@ -207,7 +233,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             masks_color_summand += masks_color_cumul.sum(dim=0)
 
         img_gpu = img_gpu * inv_alph_masks.prod(dim=0) + masks_color_summand
-    
+    # get_color로 얻은 색으로 display할 mask를 gpu에 그림
+
     if args.display_fps:
             # Draw the box for the fps on the GPU
         font_face = cv2.FONT_HERSHEY_DUPLEX
@@ -217,11 +244,12 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         text_w, text_h = cv2.getTextSize(fps_str, font_face, font_scale, font_thickness)[0]
 
         img_gpu[0:text_h+8, 0:text_w+8] *= 0.6 # 1 - Box alpha
-
+    # display할 fps 내용 gpu에 그림
 
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
     img_numpy = (img_gpu * 255).byte().cpu().numpy()
+    # cpu에서 수행할 작업 
 
     if args.display_fps:
         # Draw the text on the CPU
@@ -229,7 +257,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         text_color = [255, 255, 255]
 
         cv2.putText(img_numpy, fps_str, text_pt, font_face, font_scale, text_color, font_thickness, cv2.LINE_AA)
-    
+    # cv2 이용해 fps 출력
+
     if num_dets_to_consider == 0:
         return img_numpy
 
@@ -245,7 +274,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             if args.display_text:
                 _class = cfg.dataset.class_names[classes[j]]
                 text_str = '%s: %.2f' % (_class, score) if args.display_scores else _class
-
+                # class string, confidence score 출력
                 font_face = cv2.FONT_HERSHEY_DUPLEX
                 font_scale = 0.6
                 font_thickness = 1
@@ -257,10 +286,12 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
 
                 cv2.rectangle(img_numpy, (x1, y1), (x1 + text_w, y1 - text_h - 4), color, -1)
                 cv2.putText(img_numpy, text_str, text_pt, font_face, font_scale, text_color, font_thickness, cv2.LINE_AA)
-            
+    # cv2 이용해 detection에 대한 정보 출력        
     
     return img_numpy
 
+# prep_benchmark
+# operation : detection을 그리는 대신, top_k(개)만큼의 class, score, box, mask를 적절한 형태로 저장
 def prep_benchmark(dets_out, h, w):
     with timer.env('Postprocess'):
         t = postprocess(dets_out, w, h, crop_masks=args.crop, score_threshold=args.score_threshold)
@@ -280,6 +311,10 @@ def prep_benchmark(dets_out, h, w):
         # Just in case
         torch.cuda.synchronize()
 
+# prep_coco_cats 
+# operation : config.py로부터 COCO Category를 index로 불러와 coco_cats과 coco_cats_inv에 채워준다.
+#             category table을 yolact에 맞게 변형해주는 작업
+#             별도로 평가할 image가 없을 때 COCO dataset을 이용하기 위함.
 def prep_coco_cats():
     """ Prepare inverted table for category id lookup given a coco cats object. """
     for coco_cat_id, transformed_cat_id_p1 in get_label_map().items():
@@ -287,16 +322,22 @@ def prep_coco_cats():
         coco_cats[transformed_cat_id] = coco_cat_id
         coco_cats_inv[coco_cat_id] = transformed_cat_id
 
-
+# get_coco_cat
+# operation : 변형된 category id로 coco category id를 가져온다.
 def get_coco_cat(transformed_cat_id):
     """ transformed_cat_id is [0,80) as indices in cfg.dataset.class_names """
     return coco_cats[transformed_cat_id]
 
+
+# get_transformed_cat
+# operation : coco category 값으로 변형된 category id를 가져온다.
 def get_transformed_cat(coco_cat_id):
     """ transformed_cat_id is [0,80) as indices in cfg.dataset.class_names """
     return coco_cats_inv[coco_cat_id]
 
-
+# Detections
+# operation : bbox와 mask 정보를 객체에 저장한 후 file에 저장하기 위함 
+#             evaluate 함수에서 display와 benchmark 설정이 false일 때 이용된다.
 class Detections:
 
     def __init__(self):
@@ -369,20 +410,24 @@ class Detections:
 
         with open(os.path.join(args.web_det_path, '%s.json' % cfg.name), 'w') as f:
             json.dump(output, f)
-        
-
-        
-
+   
+       
+# _mask_iou
+# operation : mask iou 반환
 def _mask_iou(mask1, mask2, iscrowd=False):
     with timer.env('Mask IoU'):
         ret = mask_iou(mask1, mask2, iscrowd)
     return ret.cpu()
 
+# _bbox_iou
+# operation : bbox iou 반환
 def _bbox_iou(bbox1, bbox2, iscrowd=False):
     with timer.env('BBox IoU'):
         ret = jaccard(bbox1, bbox2, iscrowd)
     return ret.cpu()
 
+# prep_metrics
+# operation : evaluate에서 display나 benchmark 대신, mAP를 계산
 def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, detections:Detections=None):
     """ Returns a list of APs for this image, with each element being for a class  """
     if not args.output_coco_json:
@@ -398,6 +443,7 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                 crowd_boxes  , gt_boxes   = split(gt_boxes)
                 crowd_masks  , gt_masks   = split(gt_masks)
                 crowd_classes, gt_classes = split(gt_classes)
+    # ground truth의 box, class, mask 준비
 
     with timer.env('Postprocess'):
         classes, scores, boxes, masks = postprocess(dets, w, h, crop_masks=args.crop, score_threshold=args.score_threshold)
@@ -415,7 +461,7 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
             mask_scores = scores
         masks = masks.view(-1, h*w).cuda()
         boxes = boxes.cuda()
-
+    # postprocess
 
     if args.output_coco_json:
         with timer.env('JSON Output'):
@@ -427,7 +473,8 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                     detections.add_bbox(image_id, classes[i], boxes[i,:],   box_scores[i])
                     detections.add_mask(image_id, classes[i], masks[i,:,:], mask_scores[i])
             return
-    
+    # detection 객체에 추가
+
     with timer.env('Eval Setup'):
         num_pred = len(classes)
         num_gt   = len(gt_classes)
@@ -509,7 +556,8 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                             ap_obj.push(score_func(i), False)
     timer.stop('Main loop')
 
-
+# APDataObject
+# operation : 한 IoU와 class에 대한 AP를 계산하기 위한 정보 저장
 class APDataObject:
     """
     Stores all the information necessary to calculate the AP for one IoU and one class.
@@ -580,6 +628,10 @@ class APDataObject:
         # avg([precision(x) for x in 0:0.01:1])
         return sum(y_range) / len(y_range)
 
+# badhash
+# operation : image의 id를 토대로 hash sorting
+#             python 버전이나 pycocotools를 쓰는 법에 따라 
+#             딕셔너리에서 랜덤하게 정렬되는 부분을 해결하기 위함.
 def badhash(x):
     """
     Just a quick and dirty hash function for doing a deterministic shuffle based on image_id.
@@ -592,6 +644,8 @@ def badhash(x):
     x =  ((x >> 16) ^ x) & 0xFFFFFFFF
     return x
 
+# evalimage
+# operation : 하나의 이미지 evaluate(prep_display)
 def evalimage(net:Yolact, path:str, save_path:str=None):
     frame = torch.from_numpy(cv2.imread(path)).cuda().float()
     batch = FastBaseTransform()(frame.unsqueeze(0))
@@ -609,6 +663,9 @@ def evalimage(net:Yolact, path:str, save_path:str=None):
     else:
         cv2.imwrite(save_path, img_numpy)
 
+# evalimages
+# operation : 여러 개의 이미지 evaluate 
+#             path를 얻어서 각각의 image에 대해 evalimage() 수행
 def evalimages(net:Yolact, input_folder:str, output_folder:str):
     if not os.path.exists(output_folder):
         os.mkdir(output_folder)
@@ -627,12 +684,17 @@ def evalimages(net:Yolact, input_folder:str, output_folder:str):
 from multiprocessing.pool import ThreadPool
 from queue import Queue
 
+
+# CustomDataParallel
+# torch.nn.DataParallel의 gather의 반환값을 output_device에 상관없도록 customizing함.
 class CustomDataParallel(torch.nn.DataParallel):
     """ A Custom Data Parallel class that properly gathers lists of dictionaries. """
     def gather(self, outputs, output_device):
         # Note that I don't actually want to convert everything to the output_device
         return sum(outputs, [])
-
+    
+# evalvideo
+# operation : cv2를 활용하여 video file이나 webcam을 input으로 받아 evaluation 수행 (prep_display)
 def evalvideo(net:Yolact, path:str, out_path:str=None):
     # If the path is a digit, parse it as a webcam index
     is_webcam = path.isdigit()
@@ -866,7 +928,9 @@ def evalvideo(net:Yolact, path:str, out_path:str=None):
         print('\nStopping...')
     
     cleanup_and_exit()
-
+             
+# evaluate
+# operation : 설정에 따라 3가지 task 중 하나의 evaluation 진행
 def evaluate(net:Yolact, dataset, train_mode=False):
     net.detect.use_fast_nms = args.fast_nms
     net.detect.use_cross_class_nms = args.cross_class_nms
@@ -1001,8 +1065,9 @@ def evaluate(net:Yolact, dataset, train_mode=False):
 
     except KeyboardInterrupt:
         print('Stopping...')
-
-
+        
+# calc_map
+# operation : ap_data 이용해 mAP 계산
 def calc_map(ap_data):
     print('Calculating mAP...')
     aps = [{'box': [], 'mask': []} for _ in iou_thresholds]
@@ -1031,6 +1096,8 @@ def calc_map(ap_data):
     all_maps = {k: {j: round(u, 2) for j, u in v.items()} for k, v in all_maps.items()}
     return all_maps
 
+# print_maps
+# operation : calc_map의 output(mAP) 출력
 def print_maps(all_maps):
     # Warning: hacky 
     make_row = lambda vals: (' %5s |' * len(vals)) % tuple(vals)
@@ -1047,15 +1114,19 @@ def print_maps(all_maps):
 
 
 if __name__ == '__main__':
+
     parse_args()
+    # sys args 자동으로 parsing
 
     if args.config is not None:
         set_cfg(args.config)
+    # config setting
 
     if args.trained_model == 'interrupt':
         args.trained_model = SavePath.get_interrupt('weights/')
     elif args.trained_model == 'latest':
         args.trained_model = SavePath.get_latest('weights/', cfg.name)
+    # weight load
 
     if args.config is None:
         model_path = SavePath.from_str(args.trained_model)
@@ -1063,17 +1134,21 @@ if __name__ == '__main__':
         args.config = model_path.model_name + '_config'
         print('Config not specified. Parsed %s from the file name.\n' % args.config)
         set_cfg(args.config)
+    # sys args 없었으면 저장된 config 불러와서 setting
 
     if args.detect:
         cfg.eval_mask_branch = False
+    # args.detect 가 true면, mask_branch에 대한 evaluation 수행하지 않고 object detection만 수행
+    # display, benchmark일 때 해당
 
     if args.dataset is not None:
         set_dataset(args.dataset)
 
+
     with torch.no_grad():
         if not os.path.exists('results'):
             os.makedirs('results')
-
+        # output directory 생성
         if args.cuda:
             cudnn.fastest = True
             torch.set_default_tensor_type('torch.cuda.FloatTensor')
@@ -1085,6 +1160,7 @@ if __name__ == '__main__':
                 ap_data = pickle.load(f)
             calc_map(ap_data)
             exit()
+        # display 작업 아니면 ap_data 불러와서 mAP 계산
 
         if args.image is None and args.video is None and args.images is None:
             dataset = COCODetection(cfg.dataset.valid_images, cfg.dataset.valid_info,
@@ -1092,16 +1168,17 @@ if __name__ == '__main__':
             prep_coco_cats()
         else:
             dataset = None        
+        # 처리할 image, video, images 없으면 COCO dataset 활용 
 
         print('Loading model...', end='')
         net = Yolact()
         net.load_weights(args.trained_model)
-        net.eval()
+        net.eval()                                 
+        # 추론 전에 evaluation mode로 설정 
         print(' Done.')
 
         if args.cuda:
             net = net.cuda()
 
         evaluate(net, dataset)
-
 
