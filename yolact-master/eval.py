@@ -42,6 +42,7 @@ def str2bool(v):
 #             입력인자를 설정값으로 이용하고, 
 #             입력되지 않는 경우에는 기본값으로 지정, 잘못 입력된 경우 error를 표시해준다.
 #             각 인자에 대한 설명은 add_argument 메서드 호출 시 문자열인 help 값으로 표시된다.
+#             코드에서 args.*** 에 대한 설명은 help 참조할 것.
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description='YOLACT COCO Evaluation')
@@ -1160,7 +1161,7 @@ if __name__ == '__main__':
                 ap_data = pickle.load(f)
             calc_map(ap_data)
             exit()
-        # display 작업 아니면 ap_data 불러와서 mAP 계산
+        # display 작업 아니고, args.resume이 true면 ap_data 불러와서 mAP 계산
 
         if args.image is None and args.video is None and args.images is None:
             dataset = COCODetection(cfg.dataset.valid_images, cfg.dataset.valid_info,
