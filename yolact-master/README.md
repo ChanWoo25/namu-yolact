@@ -9,7 +9,7 @@
 #### YOLACT++ (v1.2) released! ([Changelog](CHANGELOG.md))
 YOLACT++'s resnet50 model runs at 33.5 fps on a Titan Xp and achieves 34.1 mAP on COCO's `test-dev` (check out our journal paper [here](https://arxiv.org/abs/1912.06218)).
 
-In order to use YOLACT++, make sure you compile the DCNv2 code. (See [Installation](https://github.com/dbolya/yolact#installation))
+YOLACT++를 사용하고 싶다면, DCNv2 code를 반드시 먼저 컴파일해야 한다.(See [Installation](https://github.com/dbolya/yolact#installation))
 
 #### For a real-time demo, check out our ICCV video:
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/0pMfmo8qfpQ/0.jpg)](https://www.youtube.com/watch?v=0pMfmo8qfpQ)
