@@ -28,6 +28,8 @@ class Bottleneck(nn.Module):
             self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
                                 padding=dilation, bias=False, dilation=dilation)
         self.bn2 = norm_layer(planes)
+
+        #3번째 conv에서 channel이 4배가 된다.
         self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False, dilation=dilation)
         self.bn3 = norm_layer(planes * 4)
         self.relu = nn.ReLU(inplace=True)
@@ -59,7 +61,7 @@ class Bottleneck(nn.Module):
 
 class ResNetBackbone(nn.Module):
     """ Adapted from torchvision.models.resnet """
-
+    #layers : [3, 4, 23, 3], dcn_layers [0, 4, 23, 3], dcn_interbal = 3)
     def __init__(self, layers, dcn_layers=[0, 0, 0, 0], dcn_interval=1, atrous_layers=[], block=Bottleneck, norm_layer=nn.BatchNorm2d):
         super().__init__()
 
@@ -75,7 +77,7 @@ class ResNetBackbone(nn.Module):
         #cw : plane == channel 느낌
         self.inplanes = 64
         
-        #cw : 얹어진 layer 전에 첫 conv (550, 550, 3) -Conv2d> (276, 276, 64) -Pooling> (138, 138, 64)
+        #cw : 얹어진 layer 전에 첫 conv (550, 550, 3) -Conv2d> (275, 275, 64) -Pooling> (138, 138, 64)
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = norm_layer(64)
         self.relu = nn.ReLU(inplace=True)
@@ -97,10 +99,12 @@ class ResNetBackbone(nn.Module):
     
     def _make_layer(self, block, planes, blocks, stride=1, dcn_layers=0, dcn_interval=1):
         """ Here one layer means a string of n Bottleneck blocks. """
+        #blocks = layers[0, 1, 2, 3]
         downsample = None
 
         # This is actually just to create the connection between layers, and not necessarily to
         # downsample. Even if the second condition is met, it only downsamples when stride != 1
+        #block = BottleNeck,  block.expansion = 4
         if stride != 1 or self.inplanes != planes * block.expansion:
             if len(self.layers) in self.atrous_layers:
                 self.dilation += 1
@@ -117,6 +121,10 @@ class ResNetBackbone(nn.Module):
         use_dcn = (dcn_layers >= blocks)
         layers.append(block(self.inplanes, planes, stride, downsample, self.norm_layer, self.dilation, use_dcn=use_dcn))
         self.inplanes = planes * block.expansion
+        # layers[0] = 3, dcn_layers[0] = 0 일 때는 use_dcn이 계속 False,
+        # layers[1] = 4, dcn_layers[0] = 4 
+        # layers[2] = 23, dcn_layers[0] = 23 
+        # layers[3] = 3, dcn_layers[0] = 3 일 때는 dcn_interval(=3)마다 use_dcn = True.
         for i in range(1, blocks):
             use_dcn = ((i+dcn_layers) >= blocks) and (i % dcn_interval == 0)
             layers.append(block(self.inplanes, planes, norm_layer=self.norm_layer, use_dcn=use_dcn))
@@ -452,7 +460,10 @@ class VGGBackbone(nn.Module):
 
 def construct_backbone(cfg): #cw : yolact에서 cfg.backbone을 인자로 넘겨받음.
     """ Constructs a backbone given a backbone config object (see config.py). """
+    # 여기서 cfg = cfg.backbone이므로
+    # backbone = ResNetBackbone([3, 4, 23, 3], [0, 4, 23, 3], 3) 과 같음.
     backbone = cfg.type(*cfg.args)  
+
     # resnet101_dcn_inter3_backbone = resnet101_backbone.copy({
     #   'name': 'ResNet101_DCN_Interval3',
     #   'args': ([3, 4, 23, 3], [0, 4, 23, 3], 3),
@@ -460,6 +471,7 @@ def construct_backbone(cfg): #cw : yolact에서 cfg.backbone을 인자로 넘겨
     #  -> list는 ResNetBackbone Class의 layers 인자로 들어감.
                                     #cw : resnet-101 config 예 : 'args': ([3, 4, 23, 3],),'type': ResNetBackbone,
                                     #     **keyargs 로 넘길 때 *을 사용하는듯한.
+
     # Add downsampling layers until we reach the number we need
     num_layers = max(cfg.selected_layers) + 1
 
