@@ -186,8 +186,8 @@ def make_net(in_channels, conf, include_last_relu=True):   # config 세팅 값 �
 
             if layer_name == 'cat':        # 'cat'인 경우만 존재하므로 이 경우에는 예외처리가 따로 없음, subnets 합쳐서 처리
                 nets = [make_net(in_channels, x) for x in layer_cfg[1]]  # subnetwork들의 list에서 하나씩 뽑아서 network로 만들어준다
-                layer = Concat([net[0] for net in nets], layer_cfg[2])   # 
-                num_channels = sum([net[1] for net in nets])
+                layer = Concat([net[0] for net in nets], layer_cfg[2])   # make_net의 반환값은 Sequential로 묶인 layers와 출력channel이므로
+                num_channels = sum([net[1] for net in nets])             # net[0]들은 같은 layer로 묶어주고, 
         else:
             num_channels = layer_cfg[0]
             kernel_size = layer_cfg[1]
@@ -212,7 +212,10 @@ def make_net(in_channels, conf, include_last_relu=True):   # config 세팅 값 �
 
     # Use sum to concat together all the component layer lists
     net = sum([make_layer(x) for x in conf], [])
-    
+
+    #   in_channels = 256.                               #'bilinear interpolate'
+    # 'mask_proto_net': [(256, 3, {'padding': 1})] * 3 + [(None, -2, {}), (256, 3, {'padding': 1})] + [(32, 1, {})],
+    #   마지막 layer의 32 channel이 논문 저자가 찾아낸 가장 성능이 좋은 k = 32이다.
     if not include_last_relu:
         net = net[:-1] # 마지막 layer 제거(ReLU)
 
