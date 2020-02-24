@@ -135,15 +135,15 @@ def parse_args(argv=None):
 
 
 
-iou_thresholds = [x / 100 for x in range(50, 100, 5)]
-# iou 임계값을 0.5부터 0.95까지 0.05 간격으로 리스트에 저장
+# iou 임계값을 0.50부터 0.95까지 0.05 간격으로 리스트에 저장
 # mAP 계산할 때 crowd를 제외하기 위해 사용된다. 
-coco_cats = {} # Call prep_coco_cats to fill this
-coco_cats_inv = {} 
+iou_thresholds = [x / 100 for x in range(50, 100, 5)]
 # COCO Category를 넣기 위한 딕셔너리  prep_coco_cats 함수에서 채워진다.
 # 처리할 image나 video 지정 안했을 때 COCO dataset에 맞추기 위함.
-color_cache = defaultdict(lambda: {})
+coco_cats = {} # Call prep_coco_cats to fill this
+coco_cats_inv = {} 
 # display할 detection의 color를 빠르게 처리하기 위해 딕셔너리로 저장
+color_cache = defaultdict(lambda: {})
 
 # prep_display
 # operation : image에서 평가한 detection을 mask, box, class, confidence score와 함께 그려준다
@@ -151,16 +151,19 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     """
     Note: If undo_transform=False then im_h and im_w are allowed to be None.
     """
+    # undo_transform 값에 따라 처리할 image의 size 결정
     if undo_transform:
-        img_numpy = undo_image_transformation(img, w, h)
         # 변형된 image의 size를 원래대로 resizing
+        img_numpy = undo_image_transformation(img, w, h)
         img_gpu = torch.Tensor(img_numpy).cuda()
     else:
+        # 정규화에 따른 h, w 저장
         img_gpu = img / 255.0
         h, w, _ = img.shape
-        # 정규화에 따른 h, w 저장
-    # undo_transform 값에 따라 처리할 image의 size 결정
 
+    # t에 각 detection의 class index, confidence score, bounding box
+    #                    , full image mask를 tensor로 저장
+    # 자세한 내용은 layer/output_util.py의 postprocess 정의 참조
     with timer.env('Postprocess'):
         save = cfg.rescore_bbox
         cfg.rescore_bbox = True
@@ -168,10 +171,9 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
                                         crop_masks        = args.crop,
                                         score_threshold   = args.score_threshold)
         cfg.rescore_bbox = save
-    # t에 각 detection의 class index, confidence score, bounding box
-    #                    , full image mask를 tensor로 저장
-    # 자세한 내용은 layer/output_util.py의 postprocess 정의 참조
 
+    # confidence score에 따라 top_k(개)만큼 내림차순으로 선택하여 정렬하고
+    # 정렬된 index에 맞추어 classes, scores, boxes의 텐서 리스트 반환
     with timer.env('Copy'):
         idx = t[1].argsort(0, descending=True)[:args.top_k]
         
@@ -179,16 +181,14 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             # Masks are drawn on the GPU, so don't copy
             masks = t[3][idx]
         classes, scores, boxes = [x[idx].cpu().numpy() for x in t[:3]]
-    # confidence score에 따라 top_k(개)만큼 내림차순으로 선택하여 정렬하고
-    # 정렬된 index에 맞추어 classes, scores, boxes의 텐서 리스트 반환
 
+    # top_k(개)만큼의 detection 중에서 score_threshold보다 낮은 index를 반환하여
+    # 처리할 detection의 수를 감축
     num_dets_to_consider = min(args.top_k, classes.shape[0])
     for j in range(num_dets_to_consider):
         if scores[j] < args.score_threshold:
             num_dets_to_consider = j
             break
-    # top_k(개)만큼의 detection 중에서 score_threshold보다 낮은 index를 반환하여
-    # 처리할 detection의 수를 감축
 
     # Quick and dirty lambda for selecting the color for a particular index
     # Also keeps track of a per-gpu color cache for maximum speed
@@ -213,6 +213,7 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
     # First, draw the masks on the GPU where we can do it really fast
     # Beware: very fast but possibly unintelligible mask-drawing code ahead
     # I wish I had access to OpenGL or Vulkan but alas, I guess Pytorch tensor operations will have to suffice
+    # get_color로 얻은 색으로 display할 mask를 gpu에 그림
     if args.display_masks and cfg.eval_mask_branch and num_dets_to_consider > 0:
         # After this, mask is of size [num_dets, h, w, 1]
         masks = masks[:num_dets_to_consider, :, :, None]
@@ -234,8 +235,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
             masks_color_summand += masks_color_cumul.sum(dim=0)
 
         img_gpu = img_gpu * inv_alph_masks.prod(dim=0) + masks_color_summand
-    # get_color로 얻은 색으로 display할 mask를 gpu에 그림
 
+    # display할 fps 내용 gpu에 그림
     if args.display_fps:
             # Draw the box for the fps on the GPU
         font_face = cv2.FONT_HERSHEY_DUPLEX
@@ -245,24 +246,24 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
         text_w, text_h = cv2.getTextSize(fps_str, font_face, font_scale, font_thickness)[0]
 
         img_gpu[0:text_h+8, 0:text_w+8] *= 0.6 # 1 - Box alpha
-    # display할 fps 내용 gpu에 그림
 
     # Then draw the stuff that needs to be done on the cpu
     # Note, make sure this is a uint8 tensor or opencv will not anti alias text for whatever reason
-    img_numpy = (img_gpu * 255).byte().cpu().numpy()
     # cpu에서 수행할 작업 
+    img_numpy = (img_gpu * 255).byte().cpu().numpy()
 
+    # cv2 이용해 fps 출력
     if args.display_fps:
         # Draw the text on the CPU
         text_pt = (4, text_h + 2)
         text_color = [255, 255, 255]
 
         cv2.putText(img_numpy, fps_str, text_pt, font_face, font_scale, text_color, font_thickness, cv2.LINE_AA)
-    # cv2 이용해 fps 출력
 
     if num_dets_to_consider == 0:
         return img_numpy
 
+    # cv2 이용해 detection에 대한 정보 출력        
     if args.display_text or args.display_bboxes:
         for j in reversed(range(num_dets_to_consider)):
             x1, y1, x2, y2 = boxes[j, :]
@@ -274,8 +275,8 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
 
             if args.display_text:
                 _class = cfg.dataset.class_names[classes[j]]
-                text_str = '%s: %.2f' % (_class, score) if args.display_scores else _class
                 # class string, confidence score 출력
+                text_str = '%s: %.2f' % (_class, score) if args.display_scores else _class
                 font_face = cv2.FONT_HERSHEY_DUPLEX
                 font_scale = 0.6
                 font_thickness = 1
@@ -287,14 +288,13 @@ def prep_display(dets_out, img, h, w, undo_transform=True, class_color=False, ma
 
                 cv2.rectangle(img_numpy, (x1, y1), (x1 + text_w, y1 - text_h - 4), color, -1)
                 cv2.putText(img_numpy, text_str, text_pt, font_face, font_scale, text_color, font_thickness, cv2.LINE_AA)
-    # cv2 이용해 detection에 대한 정보 출력        
     
     return img_numpy
 
 # prep_benchmark
 # operation : detection을 그리는 대신, top_k(개)만큼의 class, score, box, mask를 적절한 형태로 저장
 def prep_benchmark(dets_out, h, w):
-    with timer.env('Postprocess'):
+    with [timer].env('Postprocess'):
         t = postprocess(dets_out, w, h, crop_masks=args.crop, score_threshold=args.score_threshold)
 
     with timer.env('Copy'):
@@ -431,6 +431,7 @@ def _bbox_iou(bbox1, bbox2, iscrowd=False):
 # operation : evaluate에서 display나 benchmark 대신, mAP를 계산
 def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, detections:Detections=None):
     """ Returns a list of APs for this image, with each element being for a class  """
+    # ground truth의 box, class, mask 준비
     if not args.output_coco_json:
         with timer.env('Prepare gt'):
             gt_boxes = torch.Tensor(gt[:, :4])
@@ -444,8 +445,8 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                 crowd_boxes  , gt_boxes   = split(gt_boxes)
                 crowd_masks  , gt_masks   = split(gt_masks)
                 crowd_classes, gt_classes = split(gt_classes)
-    # ground truth의 box, class, mask 준비
 
+    # postprocess
     with timer.env('Postprocess'):
         classes, scores, boxes, masks = postprocess(dets, w, h, crop_masks=args.crop, score_threshold=args.score_threshold)
 
@@ -462,8 +463,8 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
             mask_scores = scores
         masks = masks.view(-1, h*w).cuda()
         boxes = boxes.cuda()
-    # postprocess
 
+    # detection 객체에 추가
     if args.output_coco_json:
         with timer.env('JSON Output'):
             boxes = boxes.cpu().numpy()
@@ -474,7 +475,6 @@ def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, de
                     detections.add_bbox(image_id, classes[i], boxes[i,:],   box_scores[i])
                     detections.add_mask(image_id, classes[i], masks[i,:,:], mask_scores[i])
             return
-    # detection 객체에 추가
 
     with timer.env('Eval Setup'):
         num_pred = len(classes)
@@ -1115,72 +1115,72 @@ def print_maps(all_maps):
 
 
 if __name__ == '__main__':
-    
+
     #1
-    parse_args()
     # sys args 자동으로 parsing
+    parse_args()
 
     #2
+    # config setting
     if args.config is not None:
         set_cfg(args.config)
-    # config setting
 
     #3
+    # weight load
     if args.trained_model == 'interrupt':
         args.trained_model = SavePath.get_interrupt('weights/')
     elif args.trained_model == 'latest':
         args.trained_model = SavePath.get_latest('weights/', cfg.name)
-    # weight load
 
     #4
+    # sys args 없었으면 저장된 config 불러와서 setting
     if args.config is None:
         model_path = SavePath.from_str(args.trained_model)
         # TODO: Bad practice? Probably want to do a name lookup instead.
         args.config = model_path.model_name + '_config'
         print('Config not specified. Parsed %s from the file name.\n' % args.config)
         set_cfg(args.config)
-    # sys args 없었으면 저장된 config 불러와서 setting
 
-    if args.detect:
-        cfg.eval_mask_branch = False
     # args.detect 가 true면, mask_branch에 대한 evaluation 수행하지 않고 object detection만 수행
     # display, benchmark일 때 해당
+    if args.detect:
+        cfg.eval_mask_branch = False
 
     if args.dataset is not None:
         set_dataset(args.dataset)
 
 
     with torch.no_grad():
+        # output directory 생성
         if not os.path.exists('results'):
             os.makedirs('results')
-        # output directory 생성
         if args.cuda:
             cudnn.fastest = True
             torch.set_default_tensor_type('torch.cuda.FloatTensor')
         else:
             torch.set_default_tensor_type('torch.FloatTensor')
 
+        # display 작업 아니고, args.resume이 true면 ap_data 불러와서 mAP 계산
         if args.resume and not args.display:
             with open(args.ap_data_file, 'rb') as f:
                 ap_data = pickle.load(f)
             calc_map(ap_data)
             exit()
-        # display 작업 아니고, args.resume이 true면 ap_data 불러와서 mAP 계산
 
+        # 처리할 image, video, images 없으면 COCO dataset 활용 
         if args.image is None and args.video is None and args.images is None:
             dataset = COCODetection(cfg.dataset.valid_images, cfg.dataset.valid_info,
                                     transform=BaseTransform(), has_gt=cfg.dataset.has_gt)
             prep_coco_cats()
         else:
             dataset = None        
-        # 처리할 image, video, images 없으면 COCO dataset 활용 
 
         #5
         print('Loading model...', end='')
         net = Yolact()
         net.load_weights(args.trained_model)
-        net.eval()                                 
         # 추론 전에 evaluation mode로 설정 
+        net.eval()                                 
         print(' Done.')
 
         if args.cuda:
@@ -1188,4 +1188,3 @@ if __name__ == '__main__':
 
         #6
         evaluate(net, dataset)
-
