@@ -473,8 +473,12 @@ def construct_backbone(cfg): #cw : yolact에서 cfg.backbone을 인자로 넘겨
                                     #     **keyargs 로 넘길 때 *을 사용하는듯한.
 
     # Add downsampling layers until we reach the number we need
-    num_layers = max(cfg.selected_layers) + 1
+    #hj : selected layers = [1, 2, 3]
+    #     num_layers = 4
+    num_layers = max(cfg.selected_layers) + 1   
 
+    #hj : backbone.layers=[3, 4, 23, 3]
+    #     len(backbone.layers) = 4
     while len(backbone.layers) < num_layers:
         backbone.add_layer()
 
