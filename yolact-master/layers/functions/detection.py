@@ -34,7 +34,7 @@ class Detect(object):
         self.conf_thresh = conf_thresh  # fast nms에서는 top_k로 대체됨.
         
         self.use_cross_class_nms = False
-        self.use_fast_nms = False   
+        self.use_fast_nms = False   # jy: eval.py에서 true로 쓰이는 듯함.
 
     def __call__(self, predictions, net):
         # jy: yolact.py Yolact 클래스의 forward 함수에서 호출 
@@ -55,9 +55,8 @@ class Detect(object):
         Returns:
             output of shape (batch_size, top_k, 1 + 1 + 4 + mask_dim)
             These outputs are in the order: class idx, confidence, bbox coords, and mask.
-
             Note that the outputs are sorted only if cross_class_nms is False
-            # jy: cross_class_nms를 사용하지 않을 때만 output을 정렬한다.
+            # jy: evaluation 아닐 때만 정렬 된다는 의미. 아마 훈련 동안 output에 접근하기 위함
         """
 
         loc_data   = predictions['loc']
@@ -150,10 +149,11 @@ class Detect(object):
 
         # cc_fast_nms와 다르게 
     def fast_nms(self, boxes, masks, scores, iou_threshold:float=0.5, top_k:int=200, second_threshold:bool=False):
-        scores, idx = scores.sort(1, descending=True)
+        scores, idx = scores.sort(1, descending=True) # 클래스마다 conf_score에 따라 내림차순으로 정렬
 
         idx = idx[:, :top_k].contiguous()  # 텐서의 메모리 연결이 끊어져 불연속하게 되었을 때 새로 복사본을 만들어서 연속적인 메모리 배열을 생성
         scores = scores[:, :top_k]
+        # 클래스마다 top_k개 씩 남긴다.
     
         num_classes, num_dets = idx.size()
 
@@ -213,21 +213,24 @@ class Detect(object):
         for _cls in range(num_classes):
             cls_scores = scores[_cls, :]
             conf_mask = cls_scores > conf_thresh
+            # threshold 넘는 confidence score 남김
             idx = torch.arange(cls_scores.size(0), device=boxes.device)
+            # 점수 내림차순으로 정렬
 
             cls_scores = cls_scores[conf_mask]
             idx = idx[conf_mask]
 
             if cls_scores.size(0) == 0:
-                continue
+                continue # 없으면 건너뛰기 
             
             preds = torch.cat([boxes[conf_mask], cls_scores[:, None]], dim=1).cpu().numpy()
-            keep = cnms(preds, iou_threshold)
+            keep = cnms(preds, iou_threshold) # 예측에 대해 iou 계산 후 threshold 넘는 것 제거
             keep = torch.Tensor(keep, device=boxes.device).long()
-
+            
             idx_lst.append(idx[keep])
             cls_lst.append(keep * 0 + _cls)
             scr_lst.append(cls_scores[keep])
+            # 남은 것들 list에 추가
         
         idx     = torch.cat(idx_lst, dim=0)
         classes = torch.cat(cls_lst, dim=0)
