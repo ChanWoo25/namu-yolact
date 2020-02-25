@@ -34,7 +34,7 @@ class Detect(object):
         self.conf_thresh = conf_thresh  # fast nms에서는 top_k로 대체됨.
         
         self.use_cross_class_nms = False
-        self.use_fast_nms = False   # jy: eval.py에서 true로 쓰이는 듯함.
+        self.use_fast_nms = False   
 
     def __call__(self, predictions, net):
         # jy: yolact.py Yolact 클래스의 forward 함수에서 호출 
@@ -57,7 +57,7 @@ class Detect(object):
             These outputs are in the order: class idx, confidence, bbox coords, and mask.
 
             Note that the outputs are sorted only if cross_class_nms is False
-            # jy: evaluation 아닐 때만 정렬 된다는 의미. 아마 훈련 동안 output에 접근하기 위함
+            # jy: cross_class_nms를 사용하지 않을 때만 output을 정렬한다.
         """
 
         loc_data   = predictions['loc']
