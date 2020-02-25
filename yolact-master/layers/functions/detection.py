@@ -24,17 +24,17 @@ class Detect(object):
     # TODO: Refactor this whole class away. It needs to go.
 
     def __init__(self, num_classes, bkg_label, top_k, conf_thresh, nms_thresh):
-        self.num_classes = num_classes
-        self.background_label = bkg_label
-        self.top_k = top_k                       
+        self.num_classes = num_classes      # 81
+        self.background_label = bkg_label   # 0
+        self.top_k = top_k                  # 200     
         # Parameters used in nms.
-        self.nms_thresh = nms_thresh   #nms에서 iou thresh
+        self.nms_thresh = nms_thresh        # 0.5 : IoU threshold
         if nms_thresh <= 0:
             raise ValueError('nms_threshold must be non negative.')
-        self.conf_thresh = conf_thresh  # fast nms에서는 top_k로 대체됨.
+        self.conf_thresh = conf_thresh      # fast nms에서는 top_k로 대체됨.
         
         self.use_cross_class_nms = False
-        self.use_fast_nms = False   # jy: eval.py에서 true로 쓰이는 듯함.
+        self.use_fast_nms = False 
 
     def __call__(self, predictions, net):
         # jy: yolact.py Yolact 클래스의 forward 함수에서 호출 
@@ -55,8 +55,9 @@ class Detect(object):
         Returns:
             output of shape (batch_size, top_k, 1 + 1 + 4 + mask_dim)
             These outputs are in the order: class idx, confidence, bbox coords, and mask.
+
             Note that the outputs are sorted only if cross_class_nms is False
-            # jy: evaluation 아닐 때만 정렬 된다는 의미. 아마 훈련 동안 output에 접근하기 위함
+            # jy: cross_class_nms를 사용하지 않을 때만 output을 정렬한다.
         """
 
         loc_data   = predictions['loc']
@@ -74,9 +75,9 @@ class Detect(object):
             num_priors = prior_data.size(0)
 
             conf_preds = conf_data.view(batch_size, num_priors, self.num_classes).transpose(2, 1).contiguous()
-
+            # (n, c, num_priors)
             for batch_idx in range(batch_size):
-                decoded_boxes = decode(loc_data[batch_idx], prior_data)
+                decoded_boxes = decode(loc_data[batch_idx], prior_data) # 실제 bbox의 위치를 반환.
                 result = self.detect(batch_idx, conf_preds, decoded_boxes, mask_data, inst_data)
 
                 if result is not None and proto_data is not None:
@@ -91,7 +92,7 @@ class Detect(object):
     def detect(self, batch_idx, conf_preds, decoded_boxes, mask_data, inst_data):
         """ Perform nms for only the max scoring class that isn't background (class 0) """
         cur_scores = conf_preds[batch_idx, 1:, :]
-        conf_scores, _ = torch.max(cur_scores, dim=0)
+        conf_scores, _ = torch.max(cur_scores, dim=0) # 가장 높은 클래스 점수만 남김
 
         keep = (conf_scores > self.conf_thresh)
         scores = cur_scores[:, keep]
@@ -134,16 +135,19 @@ class Detect(object):
         
         # Zero out the lower triangle of the cosine similarity(코사인 유사도? 다차원에서의 거리, 유사도 측정) matrix and diagonal
         iou.triu_(diagonal=1)
+        #cw : lower_triangle에 해당하는 (대각선 기준 대칭이니까) 부분을 0으로 지워버린다.
 
         # Now that everything in the diagonal and below is zeroed out, if we take the max
         # of the IoU matrix along the columns, each column will represent the maximum IoU
         # between this element and every element with a higher score than this element.
         # element와 자기보다 더 높은 score 가진 element 중에 IoU가 제일 큰 것만 남김.
         iou_max, _ = torch.max(iou, dim=0)
+        #cw : iou는 각 prior boxes간의 유사도 점수를 갖고 있으니, max함수를 거치면 (0차원에서) 유사도가 가장 높은 애들을 뽑아낸다.
 
         # Now just filter out the ones greater than the threshold, i.e., only keep boxes that
         # don't have a higher scoring box that would supress it in normal NMS.
         idx_out = idx[iou_max <= iou_threshold]
+        #cw : 각 0차원의 유사도가 max값이 임계값이하인 애들을 안 겹치는 애들로 구분하여 idx_out에 넣어준다.
         
         return boxes[idx_out], masks[idx_out], classes[idx_out], scores[idx_out]
 
@@ -151,10 +155,9 @@ class Detect(object):
     def fast_nms(self, boxes, masks, scores, iou_threshold:float=0.5, top_k:int=200, second_threshold:bool=False):
         scores, idx = scores.sort(1, descending=True) # 클래스마다 conf_score에 따라 내림차순으로 정렬
 
-        idx = idx[:, :top_k].contiguous()  # 텐서의 메모리 연결이 끊어져 불연속하게 되었을 때 새로 복사본을 만들어서 연속적인 메모리 배열을 생성
-        scores = scores[:, :top_k]
-        # 클래스마다 top_k개 씩 남긴다.
-    
+        idx = idx[:, :top_k].contiguous()   # 텐서의 메모리 연결이 끊어져 불연속하게 되었을 때 새로 복사본을 만들어서 연속적인 메모리 배열을 생성
+        scores = scores[:, :top_k]          # 클래스마다 top_k개 씩 남긴다.
+        
         num_classes, num_dets = idx.size()
 
         boxes = boxes[idx.view(-1), :].view(num_classes, num_dets, 4)
@@ -212,25 +215,28 @@ class Detect(object):
 
         for _cls in range(num_classes):
             cls_scores = scores[_cls, :]
-            conf_mask = cls_scores > conf_thresh
+            
             # threshold 넘는 confidence score 남김
-            idx = torch.arange(cls_scores.size(0), device=boxes.device)
+            conf_mask = cls_scores > conf_thresh   
+             
             # 점수 내림차순으로 정렬
+            idx = torch.arange(cls_scores.size(0), device=boxes.device)
 
             cls_scores = cls_scores[conf_mask]
             idx = idx[conf_mask]
 
+            # 없으면 건너뛰기 
             if cls_scores.size(0) == 0:
-                continue # 없으면 건너뛰기 
+                continue
             
             preds = torch.cat([boxes[conf_mask], cls_scores[:, None]], dim=1).cpu().numpy()
-            keep = cnms(preds, iou_threshold) # 예측에 대해 iou 계산 후 threshold 넘는 것 제거
+            # 예측에 대해 iou 계산 후 threshold 넘는 것 제거
+            keep = cnms(preds, iou_threshold)
             keep = torch.Tensor(keep, device=boxes.device).long()
-            
+
             idx_lst.append(idx[keep])
             cls_lst.append(keep * 0 + _cls)
-            scr_lst.append(cls_scores[keep])
-            # 남은 것들 list에 추가
+            scr_lst.append(cls_scores[keep])    # 남은 것들 list에 추가
         
         idx     = torch.cat(idx_lst, dim=0)
         classes = torch.cat(cls_lst, dim=0)
